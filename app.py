@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.7.1)
+# Seuils Lactate – VMA (v0.7.2)
 # Corrections:
-# - Export HTML: <ata:image/png;base64,... pour TOUTES les figures (lactate, log-lactate, MLSS, SRS)
-# - Saisie sécurisée via st.form: plus de perte à la 1re saisie (commit explicite)
-# - Contrôle MLSS: fallback quand Δ10→30 indisponible; ajustements ±0.2/±0.3 km/h en fonction de la pente; arrondi au 0,1 km/h
+# - Graphiques in-app: fig_to_base64 ne ferme plus la figure (évite affichage cassé)
+# - Export HTML: balises data:image/png;base64,... pour TOUTES les figures
+# - Saisie sécurisée via st.form: plus de perte à la 1re saisie
+# - MLSS: fallback quand Δ10→30 indisponible; ajustements ±0.2/±0.3 km/h selon la pente; arrondi au 0,1 km/h
 # - "FC estimée" supprimée partout; robustesse KeyError; width="stretch" pour data_editor
 
 import io, base64
@@ -12,7 +13,7 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
 # ---------------- Helpers ----------------
@@ -24,6 +25,7 @@ def ensure_columns(df: pd.DataFrame, columns: list) -> pd.DataFrame:
 
 def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty: return df
+    # Retire toute variante de "FC estimée"
     for col in list(df.columns):
         if str(col).strip().lower().startswith("fc estim"):
             df.drop(columns=[col], inplace=True, errors="ignore")
@@ -44,9 +46,10 @@ def sanitize_mlss(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def fig_to_base64(fig, dpi=150):
+    """Encode la figure en base64 sans la fermer (important pour l’affichage in-app)."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
-    plt.close(fig)
+    # plt.close(fig)  # ⟵ NE PAS fermer ici; Streamlit gère le cycle d’affichage
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 
@@ -103,7 +106,6 @@ def mlss_control(df_mlss: pd.DataFrame, amplitude_thr: float = 1.0):
     suggest = 0.0
     note = "Variation ≤ 1.0 mmol/L : vitesse convenable." if stable else "Instabilité détectée (amplitude > 1.0 mmol/L)."
     if d10_30 is not None:
-        # Utilise Δ10→30' si dispo (règle simple)
         if d10_30 > 1.0: suggest = -0.3; note = "Lactate ↑ (> +1.0) : réduire ~0,3 km/h."
         elif 0.5 < d10_30 <= 1.0: suggest = -0.2; note = "Lactate ↑ (+0,5 à +1,0) : réduire ~0,2 km/h."
         elif -1.0 < d10_30 < -0.5: suggest = +0.2; note = "Lactate ↓ (−0,5 à −1,0) : augmenter ~0,2 km/h."
@@ -111,7 +113,6 @@ def mlss_control(df_mlss: pd.DataFrame, amplitude_thr: float = 1.0):
         else:
             suggest = 0.0; note = "Variation ≤ 0,5 mmol/L : vitesse convenable."
     else:
-        # Fallback si Δ indisponible: base sur pente
         if not stable and slope is not None:
             if slope > +0.15: suggest = -0.3; note = "Pente positive (> +0,15) : réduire ~0,3 km/h."
             elif +0.05 <= slope <= +0.15: suggest = -0.2; note = "Pente positive (+0,05 à +0,15) : réduire ~0,2 km/h."
@@ -132,7 +133,7 @@ vma = st.sidebar.number_input("VMA (km/h)", 5.0, 30.0, 17.0, step=0.1)
 bsn = st.sidebar.number_input("Lactate de base Bsn (mmol/L)", 0.5, 4.0, 1.5, step=0.1)
 n = st.sidebar.number_input("Nombre de paliers", 6, 20, 10, step=1)
 pct_start = st.sidebar.number_input("%VMA départ", 40.0, 80.0, 60.0, step=1.0)
-pct_end   = st.sidebar.number_input("%VMA final",  80.0, 120.0, 105.0, step=1.0)
+pct_end   = st.sidebar.number_input("%VMA final", 80.0, 120.0, 105.0, step=1.0)
 
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Réinitialiser la séance"):
@@ -170,14 +171,12 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
 
 # ---------------- Tab1: Saisie (form) ----------------
 with tab1:
-    # Init unique et pas d'écrasement par base_df ensuite
     if "grid_df_data" not in st.session_state:
         st.session_state["grid_df_data"] = base_df.copy()
     else:
         st.session_state["grid_df_data"] = sanitize_df(st.session_state["grid_df_data"])
 
     st.markdown("### Saisie des lactates (et FC mesurée si dispo)")
-
     with st.form(key="saisie_form", clear_on_submit=False):
         df_edit = st.data_editor(
             st.session_state["grid_df_data"], key="grid_editor",
@@ -192,12 +191,11 @@ with tab1:
         st.session_state.update({"athlete":athlete,"date":date_s,"note":note})
         st.success("Saisie enregistrée.")
 
-    # Export CSV rapide
+    # Export CSV
     out_df = sanitize_df(st.session_state["grid_df_data"].copy())
     out_df = ensure_columns(out_df, ["Lactate (mmol/L)"])
     out_df["log10(lactate)"] = np.where(pd.to_numeric(out_df["Lactate (mmol/L)"], errors="coerce")>0,
-                                        np.log10(pd.to_numeric(out_df["Lactate (mmol/L)"], errors="coerce")),
-                                        np.nan)
+                                        np.log10(pd.to_numeric(out_df["Lactate (mmol/L)"], errors="coerce")), np.nan)
     buf = io.StringIO(); out_df.to_csv(buf,index=False)
     st.download_button("📄 Télécharger CSV", data=buf.getvalue(),
                        file_name=f"seance_{st.session_state.get('athlete','Anonyme')}_{st.session_state.get('date','')}.csv",
@@ -226,10 +224,11 @@ with tab2:
     ax2.grid(True, alpha=0.3)
     st.pyplot(fig2)
 
+    # Encodage (ne ferme pas les figures)
     img1_b64 = fig_to_base64(fig1)
     img2_b64 = fig_to_base64(fig2)
 
-    # MLSS et SRS (pour export)
+    # MLSS/SRS (pour export)
     df_mlss = sanitize_mlss(st.session_state.get("df_mlss_lac", pd.DataFrame()))
     mlss_table_html = df_mlss.to_html(index=False) if not df_mlss.empty else ""
     mlss_img_b64    = st.session_state.get("mlss_img_b64", None)
@@ -238,7 +237,7 @@ with tab2:
     srs         = st.session_state.get("srs_results", {})
     srs_img_b64 = st.session_state.get("srs_img_b64", None)
 
-    # HTML autonome: balises <img> partout
+    # HTML autonome: <img> pour toutes les figures
     html = f"""
     <!DOCTYPE html>
     <html lang="fr"><head><meta charset="utf-8">
@@ -265,10 +264,7 @@ with tab2:
       <h3>Lactate – Vitesse</h3>
       data:image/png;base64,{img1_b64}
       <h3>Log(lactate) – Vitesse</h3>
-      data:image/png;base64,{img2_b64}
-
-      <h2>MLSS</h2>
-      <ul>
+      <img src="data:image/png;base64,{img2_b64}" alt="Log(lact   <ul>
         <li><b>SV2</b> : {mlss_params.get("sv2","—")} km/h</li>
         <li><b>Méthode</b> : {mlss_params.get("method","—")}</li>
         <li><b>Paramètre</b> : {mlss_params.get("param","—")}</li>
@@ -345,7 +341,6 @@ with tab3:
         st.pyplot(fig_mlss)
         mlss_img_b64 = fig_to_base64(fig_mlss)
 
-    # Contrôle + suggestion
     ctrl = mlss_control(plot_df, amplitude_thr=1.0)
     v_suggest = None
     if v_theo_mlss:
