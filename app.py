@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.5.0)
-# - Patchs : HTML <img base64>, suppression "FC estimée", masquage index,
-#            nouvel onglet MLSS (SV2→vitesse théorique + lactates 0–30’),
-#            nouvel onglet SRS (Step–Ramp–Step) avec MRT & vitesses corrigées,
-#            sections MLSS & SRS intégrées au rapport HTML.
-import io, base64, math
+# Seuils Lactate – VMA (v0.5.2)
+# Correctifs majeurs :
+# - Suppression robuste de "FC estimée" (affichage, session, import/export)
+# - Conservation de la 1re saisie (init de session unique, pas d’écrasement)
+# - Export HTML : data:image/png;base64,... pour TOUTES les figures
+# - MLSS : coercition numérique + tri par "Temps (min)" avant tracé/export
+# - Petites corrections de clés, f-strings et nettoyage centralisé
+
+import io, base64
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.5.0"
+VERSION = "0.5.2"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
 # ----------------------------- Helpers -----------------------------
@@ -21,25 +24,12 @@ def pace_min_per_km(speed_kmh: float):
 
 def pace_mmss(speed_kmh: float):
     p = pace_min_per_km(speed_kmh)
-    if np.isnan(p):
-        return ""
-    m = int(p)
-    s = int(round((p - m) * 60))
-    if s == 60:
-        m += 1
-        s = 0
+    if np.isnan(p): return ""
+    m = int(p); s = int(round((p - m) * 60))
+    if s == 60: m += 1; s = 0
     return f"{m:02d}:{s:02d}"
 
-def fc_estimee_from_vma_pct(pct, fc_rest, fc_max):
-    # (non utilisée après patch ; conservée pour compatibilité)
-    if any([fc_rest is None, fc_max is None]):
-        return np.nan
-    if np.isnan(fc_rest) or np.isnan(fc_max) or fc_rest <= 0 or fc_max <= 0 or fc_max <= fc_rest:
-        return np.nan
-    return float(fc_rest + (fc_max - fc_rest) * pct / 100.0)
-
 def linear_regression(x, y):
-    # Retourne slope, intercept, y_pred, SSE
     if len(x) < 2:
         return np.nan, np.nan, np.full_like(x, np.nan, dtype=float), np.inf
     m, b = np.polyfit(x, y, 1)
@@ -51,12 +41,10 @@ def interp_speed_at_lactate(x, y, target):
     x = np.array(x, dtype=float); y = np.array(y, dtype=float)
     mask = ~np.isnan(x) & ~np.isnan(y)
     x, y = x[mask], y[mask]
-    if len(x) < 2:
-        return np.nan
+    if len(x) < 2: return np.nan
     for k in range(1, len(x)):
         if y[k-1] < target <= y[k]:
-            if y[k] == y[k-1]:
-                return float(x[k])
+            if y[k] == y[k-1]: return float(x[k])
             return float(x[k-1] + (target - y[k-1]) * (x[k] - x[k-1]) / (y[k] - y[k-1]))
     return np.nan
 
@@ -64,9 +52,7 @@ def point_to_line_distances(xs, ys, x1, y1, x2, y2):
     xs = np.array(xs, dtype=float); ys = np.array(ys, dtype=float)
     mask = ~np.isnan(xs) & ~np.isnan(ys)
     xs, ys = xs[mask], ys[mask]
-    A = y2 - y1
-    B = x1 - x2
-    C = x2 * y1 - y2 * x1
+    A = y2 - y1; B = x1 - x2; C = x2 * y1 - y2 * x1
     denom = np.sqrt(A*A + B*B)
     if denom == 0 or len(xs) == 0:
         return np.array([]), np.array([])
@@ -75,67 +61,81 @@ def point_to_line_distances(xs, ys, x1, y1, x2, y2):
 
 def dmax_lt2(x, y):
     x = np.array(x, dtype=float); y = np.array(y, dtype=float)
-    mask = ~np.isnan(x) & ~np.isnan(y)
-    x, y = x[mask], y[mask]
-    if len(x) < 3:
-        return np.nan, None
+    mask = ~np.isnan(x) & ~np.isnan(y); x, y = x[mask], y[mask]
+    if len(x) < 3: return np.nan, None
     d, _ = point_to_line_distances(x, y, x[0], y[0], x[-1], y[-1])
-    if d.size == 0:
-        return np.nan, None
+    if d.size == 0: return np.nan, None
     idx = int(np.nanargmax(d))
     return float(x[idx]), {"distances": d, "idx": idx, "x": x, "y": y}
 
 def moddmax_lt2(x, y, x_start, y_start):
     x = np.array(x, dtype=float); y = np.array(y, dtype=float)
-    mask = ~np.isnan(x) & ~np.isnan(y)
-    x, y = x[mask], y[mask]
+    mask = ~np.isnan(x) & ~np.isnan(y); x, y = x[mask], y[mask]
     if len(x) < 3 or np.isnan(x_start) or np.isnan(y_start):
         return np.nan, None
     d, _ = point_to_line_distances(x, y, x_start, y_start, x[-1], y[-1])
-    if d.size == 0:
-        return np.nan, None
-    idx = int(np.nanargmax(d))
+    if d.size == 0: return np.nan, None
+    idx = int(np.nanargmax(d)); 
     return float(x[idx]), {"distances": d, "idx": idx, "x": x, "y": y, "x_start": x_start, "y_start": y_start}
 
 def lt1_log_lactate_breakpoint(x, y_lac):
     mask = ~np.isnan(x) & ~np.isnan(y_lac) & (y_lac > 0)
     x = np.array(x)[mask]; y = np.array(y_lac)[mask]
-    if len(x) < 4:
-        return np.nan, None
+    if len(x) < 4: return np.nan, None
     ylog = np.log10(y)
     best = {"idx": None, "sse": np.inf, "m1": np.nan, "b1": np.nan, "m2": np.nan, "b2": np.nan}
-    for b in range(1, len(x) - 2 + 1):  # rupture (>=2 pts / segment)
+    for b in range(1, len(x) - 2 + 1):
         x1, y1 = x[: b + 1], ylog[: b + 1]
         x2, y2 = x[b:], ylog[b:]
-        if len(x1) < 2 or len(x2) < 2:
-            continue
+        if len(x1) < 2 or len(x2) < 2: continue
         m1, c1, _, sse1 = linear_regression(x1, y1)
         m2, c2, _, sse2 = linear_regression(x2, y2)
         sse = sse1 + sse2
         if sse < best["sse"]:
             best = {"idx": b, "sse": sse, "m1": m1, "b1": c1, "m2": m2, "b2": c2}
-    if best["idx"] is None:
-        return np.nan, None
+    if best["idx"] is None: return np.nan, None
     bp_speed = x[best["idx"]]
     best["x"] = x; best["ylog"] = ylog
     return float(bp_speed), best
 
-def zones_from_thresholds(lt1, lt2):
-    if np.isnan(lt1) or np.isnan(lt2):
-        return {}
-    return {
-        "Zone 1 (≤LT1)": (0, lt1),
-        "Zone 2 (LT1–LT2)": (lt1, lt2),
-        "Zone 3 (≥LT2)": (lt2, None),
-    }
-
 def fig_to_base64(fig, dpi=150):
-    """Encode une figure Matplotlib en base64 et la ferme proprement."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
     plt.close(fig)
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
+
+# --- SANITIZE functions ---
+def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Nettoie la saisie principale : supprime 'FC estimée', colonnes/lignes vides, réindexe."""
+    if df is None or df.empty: 
+        return df
+    # Drop variantes de 'FC estimée'
+    for col in list(df.columns):
+        lc = str(col).strip().lower()
+        if lc in ("fc estimée (bpm)", "fc estimee (bpm)", "fc estimée", "fc estimee"):
+            df = df.drop(columns=[col], errors="ignore")
+    df = df.dropna(how="all").dropna(axis=1, how="all").reset_index(drop=True)
+    # Forcer l’ordre des colonnes attendues si présentes
+    preferred = ["Palier", "%VMA", "Vitesse (km/h)", "Allure (min/km)", "Allure (mm:ss/km)", "FC mesurée (bpm)", "Lactate (mmol/L)"]
+    cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+    return df.loc[:, cols]
+
+def sanitize_mlss(df_mlss: pd.DataFrame) -> pd.DataFrame:
+    """Nettoie le tableau MLSS : convertit en numérique, tri par Temps (min)."""
+    if df_mlss is None or df_mlss.empty:
+        return df_mlss
+    out = df_mlss.copy()
+    if "Temps (min)" in out.columns:
+        out["Temps (min)"] = pd.to_numeric(out["Temps (min)"], errors="coerce")
+    if "Lactate (mmol/L)" in out.columns:
+        out["Lactate (mmol/L)"] = pd.to_numeric(out["Lactate (mmol/L)"], errors="coerce")
+    if "FC (bpm)" in out.columns:
+        out["FC (bpm)"] = pd.to_numeric(out["FC (bpm)"], errors="coerce")
+    out = out.dropna(how="all")
+    if "Temps (min)" in out.columns:
+        out = out.sort_values("Temps (min)").reset_index(drop=True)
+    return out
 
 # ----------------------------- Sidebar -----------------------------
 st.sidebar.header("Paramètres du test")
@@ -145,15 +145,12 @@ n = st.sidebar.number_input("Nombre de paliers", min_value=6, max_value=20, valu
 pct_start = st.sidebar.number_input("%VMA palier de départ", min_value=40.0, max_value=80.0, value=60.0, step=1.0)
 pct_end = st.sidebar.number_input("%VMA palier final", min_value=80.0, max_value=120.0, value=105.0, step=1.0)
 duree_min = st.sidebar.number_input("Durée d'un palier (min) – informatif", min_value=2.0, max_value=6.0, value=3.0, step=0.5)
-fc_rest = st.sidebar.number_input("FC repos (bpm) – optionnel", min_value=0, max_value=120, value=0, step=1)
-fc_max = st.sidebar.number_input("FC max (bpm) – optionnel", min_value=0, max_value=240, value=0, step=1)
 
-# D-max polynomial
 st.sidebar.markdown("---")
 use_poly = st.sidebar.toggle("Lisser la courbe (D‑max polynomial)", value=False)
 poly_order = st.sidebar.select_slider("Ordre du polynôme", options=[2, 3], value=2, disabled=not use_poly)
 
-# Reset (nettoie clés session)
+# Reset
 if st.sidebar.button("🔄 Réinitialiser la séance"):
     for key in ["grid_df_data", "historique", "plots", "grid_editor", "athlete", "date", "note",
                 "df_mlss_lac", "mlss_params", "mlss_img_b64", "srs_results", "srs_img_b64"]:
@@ -162,13 +159,13 @@ if st.sidebar.button("🔄 Réinitialiser la séance"):
     st.rerun()
 st.sidebar.caption(f"Version {VERSION}")
 
-# ----------------------------- Paliers / base DF -----------------------------
+# ----------------------------- Base DF -----------------------------
 pcts = np.linspace(pct_start, pct_end, int(n))
 speeds = vma * pcts / 100.0
 allure_min = np.array([pace_min_per_km(s) for s in speeds])
 allure_txt = np.array([pace_mmss(s) for s in speeds])
 
-# NOTE: colonne "FC estimée (bpm)" SUPPRIMÉE
+# A la source : PAS de "FC estimée (bpm)"
 base_df = pd.DataFrame({
     "Palier": np.arange(1, int(n)+1, dtype=int),
     "%VMA": np.round(pcts, 2),
@@ -187,26 +184,32 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
 # ----------------------------- Onglet 1: Saisie -----------------------------
 with tab1:
     st.markdown("### Saisie des lactates (et FC mesurée si dispo)")
-    initial_df = st.session_state.get("grid_df_data", base_df)
 
-    # Editeur : clé widget ≠ clé des données
+    # Initialisation unique (évite la perte après 1re saisie)
+    if "grid_df_data" not in st.session_state:
+        st.session_state["grid_df_data"] = base_df.copy()
+    else:
+        # Sanitize si ancienne session contenait "FC estimée"
+        st.session_state["grid_df_data"] = sanitize_df(st.session_state["grid_df_data"])
+
+    initial_df = st.session_state["grid_df_data"]
+
     df_edit = st.data_editor(
         initial_df,
         key="grid_editor",
         num_rows="fixed",
         use_container_width=True,
-        hide_index=True,  # masque la colonne d’index 0..9
+        hide_index=True,  # masque l’index 0..9
         column_config={
             "Allure (mm:ss/km)": st.column_config.Column(disabled=True),
             "Allure (min/km)": st.column_config.Column(disabled=True),
             "%VMA": st.column_config.Column(disabled=True),
             "Vitesse (km/h)": st.column_config.Column(disabled=True),
-            # "FC estimée (bpm)" : supprimée
             "Palier": st.column_config.Column(disabled=True),
         }
     )
-    # Stockage du DF édité en session
-    st.session_state["grid_df_data"] = df_edit
+    # Stockage du DF édité en session (immédiat et nettoyé)
+    st.session_state["grid_df_data"] = sanitize_df(df_edit)
 
     # Métadonnées séance
     st.markdown("#### Métadonnées de la séance")
@@ -218,12 +221,11 @@ with tab1:
     with colm3:
         note = st.text_input("Notes (surface, météo, protocole)", value=st.session_state.get("note", ""))
 
-    # Mémoriser meta pour le rapport
     st.session_state["athlete"] = athlete
     st.session_state["date"] = date_s
     st.session_state["note"] = note
 
-    # Ajout à l'historique (mémoire de session)
+    # Historique (mémoire de session)
     if st.button("➕ Ajouter cette séance à l'historique"):
         hist = st.session_state.get("historique", [])
         record = {
@@ -255,14 +257,10 @@ with tab1:
 def compute_all(df_edit, bsn, use_poly, poly_order):
     x = pd.to_numeric(df_edit["Vitesse (km/h)"], errors="coerce").to_numpy()
     y = pd.to_numeric(df_edit["Lactate (mmol/L)"], errors="coerce").to_numpy()
-    # SL1
     sl1_level = bsn + 0.5
     sl1_speed = interp_speed_at_lactate(x, y, sl1_level)
-    # LT1
     lt1_speed, lt1_model = lt1_log_lactate_breakpoint(x, y)
-    # Dmax points
     lt2_dmax_speed, dmax_meta = dmax_lt2(x, y)
-    # Dmax polynomial (option)
     lt2_dmax_poly = np.nan; poly_meta = None
     if use_poly:
         xv = x[~np.isnan(x) & ~np.isnan(y)]
@@ -272,10 +270,8 @@ def compute_all(df_edit, bsn, use_poly, poly_order):
             coef = np.polyfit(xv, yv, poly_order)
             ygrid = np.polyval(coef, xgrid)
             lt2_dmax_poly, poly_meta = dmax_lt2(xgrid, ygrid)
-    # ModDmax (ligne depuis SL1 -> dernier point)
     x_sl1_for_line = sl1_speed if not np.isnan(sl1_speed) else np.nan
     lt2_moddmax_speed, moddmax_meta = moddmax_lt2(x, y, x_sl1_for_line, sl1_level if not np.isnan(x_sl1_for_line) else np.nan)
-    # y log pour graph
     ylog = np.where(y > 0, np.log10(y), np.nan)
     return {
         "x": x, "y": y, "ylog": ylog,
@@ -286,7 +282,7 @@ def compute_all(df_edit, bsn, use_poly, poly_order):
         "lt2_moddmax_speed": lt2_moddmax_speed, "moddmax_meta": moddmax_meta
     }
 
-calc = compute_all(st.session_state.get("grid_df_data", base_df), bsn, use_poly, poly_order)
+calc = compute_all(st.session_state["grid_df_data"], bsn, use_poly, poly_order)
 
 # ----------------------------- Onglet 2: Résultats -----------------------------
 with tab2:
@@ -320,12 +316,10 @@ with tab2:
         x, y = calc["x"], calc["y"]
         fig1, ax1 = plt.subplots(figsize=(7, 4))
         ax1.plot(x, y, "o-", label="Mesures", color="#1f77b4")
-        # Annotations (numéro de palier)
         for i, (xi, yi) in enumerate(zip(x, y)):
             if not np.isnan(xi) and not np.isnan(yi):
                 ax1.annotate(str(i+1), (xi, yi), textcoords="offset points", xytext=(0, 6),
                              ha='center', fontsize=8, color="#1f77b4")
-        # Traits verticaux
         def vline(val, label, color):
             if val and not np.isnan(val):
                 ax1.axvline(val, color=color, linestyle="--", alpha=0.8, label=label)
@@ -343,7 +337,6 @@ with tab2:
         ax1.legend()
         st.pyplot(fig1)
 
-        # Log-lactate
         st.markdown("#### Log-lactate – vitesse (rupture LT1)")
         fig2, ax2 = plt.subplots(figsize=(7, 4))
         mask_pos = ~np.isnan(calc["y"]) & (calc["y"] > 0)
@@ -357,15 +350,13 @@ with tab2:
                 ax2.plot(x1, y1_fit, "-", color="#2ca02c", label="Fit segment 1")
                 ax2.plot(x2, y2_fit, "-", color="#d62728", label="Fit segment 2")
                 ax2.axvline(calc["lt1_speed"], color="#2ca02c", linestyle="--", alpha=0.8, label="Rupture (LT1)")
-            ax2.set_xlabel("Vitesse (km/h)")
-            ax2.set_ylabel("log10(lactate)")
-            ax2.grid(True, alpha=0.3)
-            ax2.legend()
+            ax2.set_xlabel("Vitesse (km/h)"); ax2.set_ylabel("log10(lactate)")
+            ax2.grid(True, alpha=0.3); ax2.legend()
         else:
             ax2.text(0.02, 0.6, "Saisir au moins 2 mesures > 0 mmol/L", transform=ax2.transAxes)
         st.pyplot(fig2)
 
-    # -------- Rapport HTML (images <img src=...> en base64) --------
+    # Export HTML (avec balises data:image/png;base64, ...)
     img1_b64 = fig_to_base64(fig1)
     img2_b64 = fig_to_base64(fig2)
 
@@ -378,8 +369,8 @@ with tab2:
         "MLSS_90pct": mlss_speed
     }
 
-    df_display = st.session_state.get("grid_df_data", base_df).copy()
-    # Sécurité : retirer une éventuelle colonne "FC estimée"
+    df_display = st.session_state["grid_df_data"].copy()
+    # Retrait robuste de "FC estimée" côté export
     for col in list(df_display.columns):
         if str(col).strip().lower() in ("fc estimée (bpm)", "fc estimee (bpm)", "fc estimée", "fc estimee"):
             df_display.drop(columns=[col], inplace=True, errors="ignore")
@@ -388,19 +379,19 @@ with tab2:
                                             np.nan)
     table_html = df_display.to_html(index=False, escape=False)
 
-    # Sections MLSS & SRS (si disponibles)
+    # Sections MLSS & SRS pour le rapport
     mlss_params = st.session_state.get("mlss_params", None)
     mlss_img_b64 = st.session_state.get("mlss_img_b64", None)
-    df_mlss_lac = st.session_state.get("df_mlss_lac", pd.DataFrame())
-    mlss_table_html = ""
-    if mlss_params is not None and df_mlss_lac is not None and not df_mlss_lac.empty:
-        mlss_table_html = df_mlss_lac.dropna(how="all").reset_index(drop=True).to_html(index=False)
+    df_mlss_lac = sanitize_mlss(st.session_state.get("df_mlss_lac", pd.DataFrame()))
+    mlss_table_html = df_mlss_lac.to_html(index=False) if df_mlss_lac is not None and not df_mlss_lac.empty else ""
 
     mlss_html = ""
     if mlss_params is not None:
         sv2p = mlss_params.get("sv2", None)
         delta = mlss_params.get("delta", None)
         vtheo = mlss_params.get("v_theo", None)
+        img_tag = (f'data:image/png;base64,{mlss_img_b64}'
+                   if mlss_img_b64 else '<p><i>(Ajoute ≥2 valeurs de lactate pour afficher la courbe.)</i></p>')
         mlss_html = f"""
         <h2 class="section">MLSS</h2>
         <ul>
@@ -409,7 +400,7 @@ with tab2:
           <li><b>Vitesse théorique MLSS</b> : {vtheo if vtheo else "—"} km/h</li>
         </ul>
         {mlss_table_html}
-        {('data:image/png;base64,') if mlss_img_b64 else '<p><i>(Ajoute ≥2 valeurs de lactate pour afficher la courbe.)</i></p>'}
+        {img_tag}
         """
 
     srs = st.session_state.get("srs_results", None)
@@ -422,6 +413,8 @@ with tab2:
         mrtu = srs.get("mrt_used", None)
         sv1c = srs.get("sv1_corr", None)
         sv2c = srs.get("sv2_corr", None)
+        img_tag = (f'data:image/png;base64,{srs_img_b64}'
+                   if srs_img_b64 else '<p><i>(Renseigne la pente, SV1/SV2 et vitesses équivalentes pour obtenir la correction.)</i></p>')
         srs_html = f"""
         <h2 class="section">Step–Ramp–Step (SRS)</h2>
         <ul>
@@ -432,7 +425,7 @@ with tab2:
           <li><b>SV1 corrigée</b> : {round(sv1c,2) if sv1c else "—"} km/h ;
               <b>SV2 corrigée</b> : {round(sv2c,2) if sv2c else "—"} km/h</li>
         </ul>
-        {('data:image/png;base64,') if srs_img_b64 else '<p><i>(Renseigne la pente, SV1/SV2 et vitesses équivalentes pour obtenir la correction.)</i></p>'}
+        {img_tag}
         """
 
     athlete = st.session_state.get("athlete", "Anonyme")
@@ -460,7 +453,7 @@ with tab2:
       <li>LT1 (log-lactate): {'' if np.isnan(synth['LT1_log']) else f'{synth["LT1_log"]:.2f} km/h'}</li>
       <li>SL1 (Bsn+0,5): {'' if np.isnan(synth['SL1_Bsn+0.5']) else f'{synth["SL1_Bsn+0.5"]:.2f} km/h'}</li>
       <li>LT2 (D-max points): {'' if np.isnan(synth['LT2_Dmax']) else f'{synth["LT2_Dmax"]:.2f} km/h'}</li>
-      <li>LT2 (D-max poly): {'' if np.isnan(synth['LT2_Dmax_poly']) else f'{synth["LT2_Dmax_Poly"]:.2f} km/h'}</li>
+      <li>LT2 (D-max poly): {'' if np.isnan(synth['LT2_Dmax_poly']) else f'{synth["LT2_Dmax_poly"]:.2f} km/h'}</li>
       <li>LT2 (ModDmax): {'' if np.isnan(synth['LT2_ModDmax']) else f'{synth["LT2_ModDmax"]:.2f} km/h'}</li>
       <li>MLSS (90% du LT2 choisi): {'' if np.isnan(synth['MLSS_90pct']) else f'{synth["MLSS_90pct"]:.2f} km/h'}</li>
     </ul>
@@ -473,7 +466,7 @@ with tab2:
       <h3>Courbe lactate – vitesse</h3>
       data:image/png;base64,{img1_b64}
       <h3>Log-lactate – vitesse</h3>
-      data:image/png;base64,{img2_b64}
+      <img src="data:image/pngmg2_b64}
     </div>
 
     {mlss_html}
@@ -503,7 +496,6 @@ with tab3:
         v_theo_mlss = (sv2_mlss + delta_mlss) if sv2_mlss > 0 else None
         st.metric("Vitesse théorique MLSS (km/h)", f"{v_theo_mlss:.1f}" if v_theo_mlss else "—")
 
-    # Table lactates toutes les 5' pendant 30' (0..30)
     default_times = [0, 5, 10, 15, 20, 25, 30]
     if "df_mlss_lac" not in st.session_state:
         st.session_state.df_mlss_lac = pd.DataFrame({
@@ -513,19 +505,21 @@ with tab3:
             "Commentaires": ["" for _ in default_times],
         })
 
+    # Editor MLSS (masque index)
     df_mlss_lac = st.data_editor(
         st.session_state.df_mlss_lac,
         hide_index=True,
         use_container_width=True
     )
-    st.session_state.df_mlss_lac = df_mlss_lac
+    # Nettoyage + tri par temps
+    st.session_state.df_mlss_lac = sanitize_mlss(df_mlss_lac)
 
-    # Graphe lactate vs temps + base64 pour rapport
+    # Graphe MLSS : tri & numeric
     mlss_img_b64 = None
-    lac = df_mlss_lac[["Temps (min)", "Lactate (mmol/L)"]].dropna()
-    if lac.shape[0] >= 2:
+    plot_df = sanitize_mlss(st.session_state.df_mlss_lac)
+    if not plot_df.empty and plot_df["Lactate (mmol/L)"].notna().sum() >= 2:
         fig_mlss, ax_mlss = plt.subplots(figsize=(6, 3.5))
-        ax_mlss.plot(lac["Temps (min)"], lac["Lactate (mmol/L)"], marker="o", color="#0078d4")
+        ax_mlss.plot(plot_df["Temps (min)"], plot_df["Lactate (mmol/L)"], marker="o", color="#0078d4")
         ax_mlss.set_title("MLSS – évolution du lactate")
         ax_mlss.set_xlabel("Temps (min)"); ax_mlss.set_ylabel("Lactate (mmol/L)")
         ax_mlss.grid(True, alpha=0.3)
@@ -534,7 +528,6 @@ with tab3:
     else:
         st.info("Ajoute au moins deux valeurs de lactate pour afficher la courbe.")
 
-    # Conserver pour export
     st.session_state.mlss_params = {"sv2": sv2_mlss if sv2_mlss > 0 else None,
                                     "delta": delta_mlss,
                                     "v_theo": v_theo_mlss}
@@ -543,7 +536,6 @@ with tab3:
 # ----------------------------- Onglet 4: SRS -----------------------------
 with tab4:
     st.markdown("### SRS – Paramétrage et corrections MRT")
-
     c1, c2, c3 = st.columns(3)
     with c1:
         slope = st.number_input("Pente de la rampe (km/h par min)", min_value=0.0, step=0.1, value=0.0, format="%.1f")
@@ -561,10 +553,9 @@ with tab4:
     step2 = sv2_srs + delta_step2 if sv2_srs > 0 else None
     st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 else "—")
 
-    # Calculs MRT
     mrt1 = mrt2 = mrt_used = None
     if slope and slope > 0:
-        alpha_s = slope / 60.0  # km/h par seconde
+        alpha_s = slope / 60.0
         if v_equiv1 and step1 and v_equiv1 > 0 and step1 > 0:
             mrt1 = (v_equiv1 - step1) / alpha_s
         if v_equiv2 and step2 and v_equiv2 > 0 and step2 > 0:
@@ -589,7 +580,6 @@ with tab4:
     cv1.metric("SV1 corrigée (km/h)", f"{sv1_corr:.2f}" if sv1_corr else "—")
     cv2.metric("SV2 corrigée (km/h)", f"{sv2_corr:.2f}" if sv2_corr else "—")
 
-    # Graphique barres Mesuré vs Corrigé + base64
     srs_img_b64 = None
     labels, raw_vals, corr_vals = [], [], []
     if sv1_srs and sv1_srs > 0:
@@ -597,20 +587,18 @@ with tab4:
     if sv2_srs and sv2_srs > 0:
         labels.append("SV2"); raw_vals.append(sv2_srs); corr_vals.append(sv2_corr if sv2_corr is not None else np.nan)
     if labels and (np.isfinite(corr_vals).any()):
-        x = np.arange(len(labels)); w = 0.35
+        x_ = np.arange(len(labels)); w = 0.35
         fig_srs, ax_srs = plt.subplots(figsize=(6, 3.5))
-        ax_srs.bar(x - w/2, raw_vals, width=w, label="Mesuré", color="#767676")
-        ax_srs.bar(x + w/2, corr_vals, width=w, label="Corrigé", color="#107c10")
-        ax_srs.set_xticks(x, labels)
-        ax_srs.set_ylabel("Vitesse (km/h)")
+        ax_srs.bar(x_ - w/2, raw_vals, width=w, label="Mesuré", color="#767676")
+        ax_srs.bar(x_ + w/2, corr_vals, width=w, label="Corrigé", color="#107c10")
+        ax_srs.set_xticks(x_, labels); ax_srs.set_ylabel("Vitesse (km/h)")
         ax_srs.set_title("Correction des vitesses SV1 / SV2 par MRT")
         ax_srs.legend(); ax_srs.grid(axis="y", alpha=0.3)
         st.pyplot(fig_srs)
         srs_img_b64 = fig_to_base64(fig_srs, dpi=150)
     else:
-        st.info("Renseigne la pente, SV1/SV2 et les vitesses équivalentes (rampe) pour afficher la comparaison.")
+        st.info("Renseigne la pente, SV1/SV2 et vitesses équivalentes (rampe) pour afficher la comparaison.")
 
-    # Conserver pour export
     st.session_state.srs_results = {
         "slope": slope if slope > 0 else None,
         "sv1": sv1_srs if sv1_srs > 0 else None,
@@ -632,25 +620,23 @@ with tab5:
     hist = st.session_state.get("historique", [])
     st.write(f"Nombre de séances en mémoire : **{len(hist)}**")
 
-    # Import CSV → recharge la grille
     uploaded = st.file_uploader("Importer une séance (CSV)", type=["csv"])
     if uploaded:
         try:
             tmp = pd.read_csv(uploaded)
-            required_cols = {"Palier", "%VMA", "Vitesse (km/h)", "Lactate (mmol/L)"}
-            if not required_cols.issubset(tmp.columns):
+            req = {"Palier", "%VMA", "Vitesse (km/h)", "Lactate (mmol/L)"}
+            if not req.issubset(tmp.columns):
                 st.error("Colonnes manquantes dans le CSV importé.")
             else:
-                st.session_state["grid_df_data"] = tmp
+                st.session_state["grid_df_data"] = sanitize_df(tmp)
                 st.success("Séance importée dans la grille de saisie (onglet Saisie).")
         except Exception as e:
             st.error(f"Erreur import CSV : {e}")
 
-    # Export concaténé de l'historique
     if hist:
         concat_rows = []
         for rec in hist:
-            dfh = rec["df"].copy()
+            dfh = sanitize_df(rec["df"].copy())
             dfh["athlete"] = rec["athlete"]; dfh["date"] = rec["date"]
             dfh["vma"] = rec["vma"]; dfh["bsn"] = rec["bsn"]
             concat_rows.append(dfh)
@@ -673,8 +659,9 @@ with tab5:
         else:
             recA, recB = hist[idx1], hist[idx2]
             def xy_from_df(df):
-                return pd.to_numeric(df["Vitesse (km/h)"], errors="coerce").to_numpy(), \
-                       pd.to_numeric(df["Lactate (mmol/L)"], errors="coerce").to_numpy()
+                d = sanitize_df(df)
+                return pd.to_numeric(d["Vitesse (km/h)"], errors="coerce").to_numpy(), \
+                       pd.to_numeric(d["Lactate (mmol/L)"], errors="coerce").to_numpy()
             xA, yA = xy_from_df(recA["df"]); xB, yB = xy_from_df(recB["df"])
             figC, axC = plt.subplots(figsize=(7, 4))
             axC.plot(xA, yA, "o-", label=f"A: {recA['athlete']} {recA['date']}", color="#1f77b4")
