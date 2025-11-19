@@ -106,5 +106,5 @@ img_tag = (f'data:image/png;base64,{mlss_img_b64}'
            if mlss_img_b64 else '<p><i>(Ajoute ≥2 valeurs de lactate pour afficher la courbe.)</i></p>')
 
 # Correction SRS :
-img_tag = (f'<img src="data:image/png;baseg_b64}'
+img_tag = (f'data:image/png;base64,{srs_img_b64}'
            if srs_img_b64 else '<p><i>(Renseigne la pente, SV1/SV2 et vitesses équivalentes pour obtenir la correction.)</i></p>')
