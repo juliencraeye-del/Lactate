@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.7.3)
-# Corrections:
-# - Graphiques HTML: data:image/png;base64,... pour Lactate et Log-lactate
-# - Pas de Markdown cassé
-# - Maintien des correctifs v0.7.2 (MLSS, SRS, saisie sécurisée)
+# Seuils Lactate – VMA (v0.7.4)
+# Changements :
+# - Ajout balises <img> pour Lactate et Log-lactate dans HTML
+# - Inclusion sections MLSS et SRS dans export HTML
+# - Maintien correctifs v0.7.3 (saisie sécurisée, arrondi vitesse, MLSS/SRS)
 
 import io, base64
 import numpy as np
@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.7.3"
+VERSION = "0.7.4"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
 # ---------------- Helpers ----------------
@@ -120,13 +120,31 @@ with tab2:
     fig2,ax2=plt.subplots(figsize=(7,4)); mask=y>0
     if np.sum(mask)>1: ax2.plot(x[mask],np.log10(y[mask]),"o-"); ax2.set_xlabel("Vitesse (km/h)"); ax2.set_ylabel("log10(lactate)"); st.pyplot(fig2)
     img1_b64, img2_b64=fig_to_base64(fig1), fig_to_base64(fig2)
+
+    # MLSS
+    df_mlss=sanitize_mlss(st.session_state.get("df_mlss_lac",pd.DataFrame()))
+    mlss_html=df_mlss.to_html(index=False) if not df_mlss.empty else "<p>(Pas de données MLSS)</p>"
+    mlss_img_b64=st.session_state.get("mlss_img_b64","")
+    mlss_params=st.session_state.get("mlss_params",{})
+
+    # SRS
+    srs=st.session_state.get("srs_results",{})
+    srs_img_b64=st.session_state.get("srs_img_b64","")
+
     html=f"""
     <!DOCTYPE html><html><head><meta charset="utf-8"><title>Rapport</title></head><body>
+    <h1>Rapport – Test lactate & SRS</h1>
+    <p><b>Athlète:</b> {st.session_state.get("athlete","Anonyme")} | <b>Date:</b> {st.session_state.get("date","")} | <b>VMA:</b> {vma:.1f} km/h | <b>Bsn:</b> {bsn:.1f} mmol/L</p>
+    <h2>Données brutes</h2>{df_calc.to_html(index=False)}
     <h2>Graphiques lactate</h2>
     <h3>Lactate – Vitesse</h3>
     data:image/png;base64,{img1_b64}
     <h3>Log(lactate) – Vitesse</h3>
     data:image/png;base64,{img2_b64}
+    <h2>MLSS</h2>{mlss_html}
+    {"<img src='data:image4," if mlss_img_b64 else ""}
+    <h2>SRS</h2>
+    {"data:image/png;base64," if srs_img_b64 else ""}
     </body></html>
     """
     st.download_button("🧾 Télécharger rapport HTML",data=html.encode("utf-8"),file_name="rapport.html",mime="text/html")
