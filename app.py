@@ -113,7 +113,7 @@ def mlss_control(df_mlss: pd.DataFrame, amplitude_thr: float = 1.0):
             elif -0.15 <= slope <= -0.05: suggest = +0.2; note = "Pente négative (−0,05 à −0,15) : augmenter ~0,2 km/h."
         else:
             suggest = 0.0; note = "Pente faible; ajuste au besoin selon protocole."
-    elif stable:
+    if stable:
         suggest = 0.0; note = "Stabilité satisfaisante."
     result["suggest_kmh"] = suggest
     result["suggest_note"] = note
@@ -305,58 +305,67 @@ with tab3:
 
     st.metric("Vitesse théorique MLSS", f"{v_theo_mlss:.1f}" if v_theo_mlss else "—")
 
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    # ✅ Correction : 10 paliers (0 à 45 min par pas de 5)
+    # Tableau de saisie toutes les 5 min pendant 30 min
     if "df_mlss_lac" not in st.session_state:
         st.session_state.df_mlss_lac = pd.DataFrame({
-            "Temps (min)": list(range(0, 50, 5)),  # 0,5,10,...,45
-            "Lactate (mmol/L)": [None]*10,
-            "FC (bpm)": [None]*10,
-            "Commentaires": ["" for _ in range(10)]
+            "Temps (min)": list(range(0, 35, 5)),
+            "Lactate (mmol/L)": [None]*7,
+            "FC (bpm)": [None]*7,
+            "Commentaires": ["" for _ in range(7)]
         })
-    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     df_mlss = st.data_editor(st.session_state.df_mlss_lac, width="stretch", hide_index=True)
     st.session_state.df_mlss_lac = sanitize_mlss(df_mlss)
 
     plot_df = sanitize_mlss(st.session_state.df_mlss_lac)
+
+    # Détection des incohérences (>1 mmol/L entre deux mesures consécutives)
+    incoherences = []
+    lactates = plot_df["Lactate (mmol/L)"].to_numpy()
+    times = plot_df["Temps (min)"].to_numpy()
+    for i in range(1, len(lactates)):
+        if pd.notna(lactates[i]) and pd.notna(lactates[i-1]):
+            if abs(lactates[i] - lactates[i-1]) > 1.0:
+                incoherences.append((times[i], lactates[i]))
+
+    # Graphique
     mlss_img_b64 = None
     if plot_df["Lactate (mmol/L)"].notna().sum() >= 2:
         fig_mlss, ax_mlss = plt.subplots(figsize=(6,3.5))
         ax_mlss.plot(plot_df["Temps (min)"], plot_df["Lactate (mmol/L)"], "o-", color="#0078d4")
+        # Points incohérents en rouge
+        if incoherences:
+            inco_times, inco_vals = zip(*incoherences)
+            ax_mlss.scatter(inco_times, inco_vals, color="red", s=80, label="Incohérence")
+            ax_mlss.legend()
         ax_mlss.set_title("MLSS – évolution du lactate")
         ax_mlss.set_xlabel("Temps (min)"); ax_mlss.set_ylabel("Lactate (mmol/L)")
         ax_mlss.grid(True, alpha=0.3)
         st.pyplot(fig_mlss)
         mlss_img_b64 = fig_to_base64(fig_mlss)
 
-    # Contrôle + suggestion
-    ctrl = mlss_control(plot_df, amplitude_thr=1.0)
-    v_suggest = None
-    if v_theo_mlss:
-        v_suggest = round_to_step(v_theo_mlss + (ctrl["suggest_kmh"] or 0.0), step=0.1)
+    # Suggestion allure
+    suggestion = "—"
+    if len(lactates) >= 2 and pd.notna(lactates[-1]) and pd.notna(lactates[0]):
+        delta = lactates[-1] - lactates[0]
+        if delta > 1.0:
+            suggestion = "Réduire vitesse de ~0,3 km/h"
+        elif delta < -1.0:
+            suggestion = "Augmenter vitesse de ~0,3 km/h"
+        else:
+            suggestion = "Vitesse OK"
 
-    cA, cB, cC, cD = st.columns(4)
-    cA.metric("Points (10–30')", f"{ctrl['n_points']}")
-    cB.metric("Amplitude (mmol/L)", f"{ctrl['amplitude']:.2f}" if ctrl["amplitude"] is not None else "—")
-    cC.metric("Pente (mmol/L/min)", f"{ctrl['slope_mmol_per_min']:.3f}" if ctrl["slope_mmol_per_min"] is not None else "—")
-    cD.metric("Δ10→30' (mmol/L)", f"{ctrl['delta_10_30']:.2f}" if ctrl["delta_10_30"] is not None else "—")
+    st.write(f"Incohérences détectées : {len(incoherences)}")
+    st.write(f"Suggestion : {suggestion}")
 
-    st.info(f"Stabilité : {'✅ Stable' if ctrl['stable'] else '⚠️ Instable' if ctrl['stable'] is not None else '—'}")
-    st.write(f"Suggestion : {ctrl['suggest_note']} → **Vitesse conseillée** : {v_suggest if v_suggest is not None else '—'} km/h")
-
+    # Sauvegarde session
     st.session_state.mlss_params = {
         "sv2": round(sv2_mlss,1) if sv2_mlss>0 else "—",
         "method": mlss_method,
         "param": mlss_param,
         "v_theo": round(v_theo_mlss,1) if v_theo_mlss else "—",
-        "mlss_ctrl_n": ctrl["n_points"],
-        "mlss_ctrl_amp": round(ctrl["amplitude"],2) if ctrl["amplitude"] is not None else "—",
-        "mlss_ctrl_slope": round(ctrl["slope_mmol_per_min"],3) if ctrl["slope_mmol_per_min"] is not None else "—",
-        "mlss_ctrl_d10_30": round(ctrl["delta_10_30"],2) if ctrl["delta_10_30"] is not None else "—",
-        "mlss_ctrl_stable": ("Oui" if ctrl["stable"] else "Non") if ctrl["stable"] is not None else "—",
-        "mlss_ctrl_suggest_note": ctrl["suggest_note"] or "—",
-        "mlss_ctrl_v_suggest": v_suggest if v_suggest is not None else "—"
+        "mlss_ctrl_inco": len(incoherences),
+        "mlss_ctrl_suggest_note": suggestion,
     }
     st.session_state.mlss_img_b64 = mlss_img_b64
 
@@ -420,7 +429,7 @@ with tab4:
         "sv1": sv1 if sv1>0 else None,
         "sv2": sv2 if sv2>0 else None,
         "step1": step1 if step1>0 else None,
-        "step2": step2 if step2 else None,
+        "step2": step2 if step2 is not None else None,
         "vo2_1": vo2_1 if vo2_1>0 else None,
         "vo2_2": vo2_2 if vo2_2>0 else None,
         "v_equiv1": v_equiv1 if v_equiv1>0 else None,
