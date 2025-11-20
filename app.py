@@ -225,13 +225,13 @@ with tab2:
     <html lang="fr"><head><meta charset="utf-8">
     <title>Rapport – Tests MLSS & SRS</title>
     <style>
-      body {{ font-family: Arial, sans-serif; margin: 24px; color: #222; }}
-      h1 {{ color: #0067b8; }}
-      h2 {{ color: #004578; margin-top: 24px; }}
-      table {{ border-collapse: collapse; width: 100%; font-size: 14px; }}
-      th, td {{ border: 1px solid #ccc; padding: 6px 8px; text-align: center; }}
-      .meta {{ color:#555; }}
-      img {{ max-width: 100%; height: auto; border:1px solid #eee; }}
+      body { font-family: Arial, sans-serif; margin: 24px; color: #222; }
+      h1 { color: #0067b8; }
+      h2 { color: #004578; margin-top: 24px; }
+      table { border-collapse: collapse; width: 100%; font-size: 14px; }
+      th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: center; }
+      .meta { color:#555; }
+      img { max-width: 100%; height: auto; border:1px solid #eee; }
     </style></head><body>
       <h1>Rapport – Test lactate & SRS</h1>
       <p class="meta"><b>Athlète:</b> {st.session_state.get("athlete","Anonyme")}
@@ -377,7 +377,7 @@ with tab4:
         vo2_2 = st.number_input("VO₂ Step 2 (ml·kg⁻¹·min⁻¹) (optionnel)", 0.0, 100.0, 0.0, step=0.1)
         v_equiv2 = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
     step2 = sv2 + delta_step2 if sv2 > 0 else None
-    st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 else "—")
+    st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 is not None else "—")
     mrt1 = mrt2 = mrt_used = None
     if slope and slope > 0:
         alpha_s = slope / 60.0
