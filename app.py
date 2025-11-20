@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.7.1 corrigée)
+# Seuils Lactate – VMA (v0.7.2 corrigée)
 import io, base64
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
-# ---------------- Helpers ----------------
+# -------------------- Helpers --------------------
 def ensure_columns(df: pd.DataFrame, columns: list) -> pd.DataFrame:
     for c in columns:
         if c not in df.columns:
@@ -48,7 +48,7 @@ def round_to_step(val, step=0.1):
     if val is None: return None
     return round(val/step)*step
 
-# ---------------- Sidebar ----------------
+# -------------------- Sidebar --------------------
 st.sidebar.header("Paramètres du test")
 vma = st.sidebar.number_input("VMA (km/h)", 5.0, 30.0, 17.0, step=0.1)
 bsn = st.sidebar.number_input("Lactate de base Bsn (mmol/L)", 0.5, 4.0, 1.5, step=0.1)
@@ -63,15 +63,17 @@ if st.sidebar.button("🔄 Réinitialiser la séance"):
     st.rerun()
 st.sidebar.caption(f"Version {VERSION}")
 
-# ---------------- Base DF ----------------
+# -------------------- Base DF --------------------
 pcts = np.linspace(pct_start, pct_end, int(n))
 speeds = vma * pcts / 100.0
+
 def pace_min_per_km(s): return 60/s if s>0 else np.nan
 def pace_mmss(s):
     if s<=0: return ""
     p = 60/s; m = int(p); sec = int(round((p-m)*60))
     if sec==60: m+=1; sec=0
     return f"{m:02d}:{sec:02d}"
+
 base_df = pd.DataFrame({
     "Palier": np.arange(1,int(n)+1),
     "%VMA": np.round(pcts,2),
@@ -83,12 +85,12 @@ base_df = pd.DataFrame({
 })
 base_df = sanitize_df(base_df)
 
-# ---------------- Tabs ----------------
+# -------------------- Tabs --------------------
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["📝 Saisie", "📈 Résultats", "🧪 MLSS", "🏃‍♂️ SRS (Step–Ramp–Step)", "📂 Historique"]
 )
 
-# ---------------- Tab1: Saisie ----------------
+# -------------------- Tab1: Saisie --------------------
 with tab1:
     if "grid_df_data" not in st.session_state:
         st.session_state["grid_df_data"] = base_df.copy()
@@ -117,29 +119,163 @@ with tab1:
                        file_name=f"seance_{st.session_state.get('athlete','Anonyme')}_{st.session_state.get('date','')}.csv",
                        mime="text/csv")
 
-# ---------------- Tab2: Résultats ----------------
+# -------------------- Tab2: Résultats --------------------
 with tab2:
     df_calc = sanitize_df(st.session_state["grid_df_data"].copy())
     df_calc = ensure_columns(df_calc, ["Vitesse (km/h)","Lactate (mmol/L)"])
     x = pd.to_numeric(df_calc["Vitesse (km/h)"], errors="coerce").to_numpy()
     y = pd.to_numeric(df_calc["Lactate (mmol/L)"], errors="coerce").to_numpy()
+
     fig1, ax1 = plt.subplots(figsize=(7,4))
     ax1.plot(x, y, "o-", color="#1f77b4")
     ax1.set_xlabel("Vitesse (km/h)"); ax1.set_ylabel("Lactate (mmol/L)")
     ax1.grid(True, alpha=0.3)
     st.pyplot(fig1)
+
     fig2, ax2 = plt.subplots(figsize=(7,4))
     mask = y>0
     if np.sum(mask) > 1:
         ax2.plot(x[mask], np.log10(y[mask]), "o-", color="#1f77b4")
-        ax2.set_xlabel("Vitesse (km/h)"); ax2.set_ylabel("log10(lactate)")
-        ax2.grid(True, alpha=0.3)
+    ax2.set_xlabel("Vitesse (km/h)"); ax2.set_ylabel("log10(lactate)")
+    ax2.grid(True, alpha=0.3)
     st.pyplot(fig2)
 
-# ---------------- Tab3: MLSS ----------------
-# (Code MLSS complet déjà fourni dans le message précédent)
+# -------------------- Tab3: MLSS --------------------
+with tab3:
+    st.markdown("### MLSS – Suivi de la stabilité du lactate à intensité constante")
 
-# ---------------- Tab4: SRS ----------------
+    # Paramètres d'analyse
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        win = st.number_input("Fenêtre moyenne glissante (min)", 1.0, 10.0, 3.0, step=0.5)
+    with c2:
+        th_slope = st.number_input("Seuil pente (mmol·L⁻¹·min⁻¹)", 0.00, 0.20, 0.03, step=0.005, format="%.3f")
+    with c3:
+        smooth = st.selectbox("Lissage de la pente", ["aucun", "moyenne mobile"])
+
+    st.caption(
+        "Objectif : vérifier la stabilité du lactate au cours d'un palier prolongé. "
+        "La pente proche de zéro ↔ compatible MLSS, au-delà du seuil ↔ au-dessus du MLSS."
+    )
+
+    # Zone de saisie / import
+    st.markdown("#### Saisie / Import des mesures")
+    if "df_mlss_lac" not in st.session_state:
+        st.session_state["df_mlss_lac"] = pd.DataFrame(
+            {"Temps (min)": [], "Lactate (mmol/L)": [], "FC (bpm)": [], "Commentaires": []}
+        )
+
+    up = st.file_uploader("Importer un CSV (colonnes: Temps (min); Lactate (mmol/L); FC (bpm); Commentaires)", type=["csv"])
+    if up:
+        try:
+            df_imp = pd.read_csv(up)
+            st.session_state["df_mlss_lac"] = sanitize_mlss(df_imp)
+            st.success("Fichier importé et nettoyé.")
+        except Exception as e:
+            st.error(f"Erreur à l'import CSV : {e}")
+
+    with st.form(key="mlss_form"):
+        df_edit = st.data_editor(
+            sanitize_mlss(st.session_state["df_mlss_lac"].copy()),
+            key="mlss_editor", num_rows="dynamic", width="stretch", hide_index=True
+        )
+        bsn_local = st.number_input("Lactate de base Bsn (mmol/L)", 0.5, 4.0, float(bsn), step=0.1)
+        submitted_mlss = st.form_submit_button("💾 Enregistrer MLSS")
+        if submitted_mlss:
+            st.session_state["df_mlss_lac"] = sanitize_mlss(df_edit)
+            st.session_state["mlss_params"] = {"win": float(win), "th_slope": float(th_slope),
+                                               "smooth": smooth, "bsn": float(bsn_local)}
+            st.success("Données MLSS enregistrées.")
+
+    # --- Calculs / Graphiques ---
+    dfm = sanitize_mlss(st.session_state.get("df_mlss_lac", pd.DataFrame()).copy())
+    if dfm.empty or dfm["Lactate (mmol/L)"].dropna().shape[0] < 2:
+        st.info("Ajoute au moins deux mesures de lactate pour afficher le graphique.")
+    else:
+        # Interpolation sur pas 0.1 min pour pente lissée
+        t = pd.to_numeric(dfm["Temps (min)"], errors="coerce").to_numpy()
+        l = pd.to_numeric(dfm["Lactate (mmol/L)"], errors="coerce").to_numpy()
+        mask = np.isfinite(t) & np.isfinite(l)
+        t, l = t[mask], l[mask]
+
+        order = np.argsort(t)
+        t, l = t[order], l[order]
+
+        if len(t) >= 2:
+            t_dense = np.arange(t.min(), t.max() + 1e-9, 0.1)
+            l_dense = np.interp(t_dense, t, l)
+
+            # Fenêtre en points (min -> points)
+            win_pts = max(1, int(round(win / 0.1)))
+            if win_pts > 1:
+                kernel = np.ones(win_pts) / win_pts
+                l_smooth = np.convolve(l_dense, kernel, mode="same")
+            else:
+                l_smooth = l_dense
+
+            # pente locale dL/dt
+            dt = 0.1  # min
+            slope = np.gradient(l_smooth, dt)
+
+            # Lissage optionnel de la pente
+            if smooth == "moyenne mobile" and win_pts > 1:
+                kernel_s = np.ones(win_pts) / win_pts
+                slope = np.convolve(slope, kernel_s, mode="same")
+
+            # Zone « compatible MLSS »
+            in_band = np.abs(slope) <= th_slope
+
+            # --- FIG 1: Lactate vs Temps + zone MLSS
+            fig_mlss, ax = plt.subplots(figsize=(7, 4))
+            ax.plot(t, l, "o", color="#1f77b4", label="Mesures")
+            ax.plot(t_dense, l_smooth, "-", color="#005a9e", label="Lactate (lissé)")
+            if in_band.any():
+                ax.fill_between(t_dense, l_smooth, where=in_band, color="#107c10", alpha=0.15, step="mid",
+                                label="|dL/dt| ≤ seuil")
+            ax.axhline(bsn_local, color="#767676", linestyle="--", linewidth=1, label=f"Bsn ≈ {bsn_local:.1f} mmol/L")
+            ax.set_xlabel("Temps (min)"); ax.set_ylabel("Lactate (mmol/L)")
+            ax.grid(True, alpha=0.3); ax.legend()
+
+            st.pyplot(fig_mlss)
+            st.session_state["mlss_img_b64"] = fig_to_base64(fig_mlss)
+
+            # --- FIG 2: Pente (mmol·L⁻¹·min⁻¹)
+            fig_sl, ax2 = plt.subplots(figsize=(7, 2.8))
+            ax2.plot(t_dense, slope, color="#d83b01", label="pente dL/dt")
+            ax2.axhline(th_slope, color="#e81123", linestyle="--", linewidth=1, label=f"+ seuil {th_slope:.3f}")
+            ax2.axhline(-th_slope, color="#e81123", linestyle="--", linewidth=1, label=f"- seuil {th_slope:.3f}")
+            ax2.set_xlabel("Temps (min)"); ax2.set_ylabel("mmol·L⁻¹·min⁻¹")
+            ax2.grid(True, alpha=0.3); ax2.legend(loc="upper right")
+            st.pyplot(fig_sl)
+
+            # Résumé indicatif : plus longue phase stable
+            segments = []
+            start = None
+            for i, ok in enumerate(in_band):
+                if ok and start is None:
+                    start = i
+                if (not ok or i == len(in_band) - 1) and start is not None:
+                    end = i if not ok else i
+                    segments.append((start, end))
+                    start = None
+            if segments:
+                best = max(segments, key=lambda s: s[1] - s[0])
+                t_start, t_end = t_dense[best[0]], t_dense[best[1]]
+                st.success(f"Phase la plus stable : ~ {t_start:.1f} → {t_end:.1f} min (|dL/dt| ≤ seuil)")
+            else:
+                st.warning("Aucune phase suffisamment stable selon le seuil choisi.")
+
+            # Export PNG
+            mlss_png = st.session_state.get("mlss_img_b64")
+            if mlss_png:
+                st.download_button(
+                    "📷 Télécharger le graphique MLSS (PNG)",
+                    data=base64.b64decode(mlss_png.encode("utf-8")),
+                    file_name="mlss_plot.png",
+                    mime="image/png",
+                )
+
+# -------------------- Tab4: SRS --------------------
 with tab4:
     st.markdown("#### Paramétrage SRS")
     c1, c2, c3 = st.columns(3)
@@ -155,6 +291,7 @@ with tab4:
         v_equiv1 = st.number_input("Vitesse équivalente VO₂ Step 1 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
         vo2_2 = st.number_input("VO₂ Step 2 (ml·kg⁻¹·min⁻¹) (optionnel)", 0.0, 100.0, 0.0, step=0.1)
         v_equiv2 = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
+
     step2 = sv2 + delta_step2 if sv2 > 0 else None
     st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 is not None else "—")
 
@@ -167,6 +304,7 @@ with tab4:
             mrt2 = (v_equiv2 - step2) / alpha_s
         candidates = [x for x in [mrt1, mrt2] if x and x > 0]
         mrt_used = float(np.mean(candidates)) if candidates else None
+
     cm1, cm2, cm3 = st.columns(3)
     cm1.metric("MRT Step 1 (s)", f"{mrt1:.0f}" if mrt1 else "—")
     cm2.metric("MRT Step 2 (s)", f"{mrt2:.0f}" if mrt2 else "—")
@@ -177,6 +315,7 @@ with tab4:
         alpha_s = slope / 60.0
         if sv1 and sv1 > 0: sv1_corr = sv1 - alpha_s * mrt_used
         if sv2 and sv2 > 0: sv2_corr = sv2 - alpha_s * mrt_used
+
     cv1, cv2 = st.columns(2)
     cv1.metric("SV1 corrigée (km/h)", f"{sv1_corr:.2f}" if sv1_corr else "—")
     cv2.metric("SV2 corrigée (km/h)", f"{sv2_corr:.2f}" if sv2_corr else "—")
@@ -213,7 +352,7 @@ with tab4:
     }
     st.session_state.srs_img_b64 = srs_img_b64
 
-# ---------------- Tab5: Historique ----------------
+# -------------------- Tab5: Historique --------------------
 with tab5:
     st.markdown("### Historique local (session)")
     hist = st.session_state.get("historique", [])
@@ -226,6 +365,7 @@ with tab5:
             st.success("Séance importée (onglet Saisie).")
         except Exception as e:
             st.error(f"Erreur import CSV : {e}")
+
     if st.button("➕ Ajouter la séance courante à l'historique"):
         rec = {
             "athlete": st.session_state.get("athlete","Anonyme"),
@@ -237,6 +377,7 @@ with tab5:
         hist.append(rec)
         st.session_state["historique"] = hist
         st.success("Séance ajoutée à l’historique.")
+
     if hist:
         concat_rows = []
         for rec in hist:
