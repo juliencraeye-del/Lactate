@@ -1,13 +1,13 @@
 
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.7.4 MLSS dédié, UI simplifiée)
+# Seuils Lactate – VMA (v0.7.5 MLSS dédié, fix valeur par défaut)
 import io, base64
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.7.4"
+VERSION = "0.7.5"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
 # -------------------- Helpers --------------------
@@ -61,7 +61,7 @@ def fig_to_base64(fig, dpi=150):
 
 
 def round_to_step(val, step=0.1):
-    if val is None:
+    if val is None or (isinstance(val, float) and (np.isnan(val) or np.isinf(val))):
         return None
     return round(val / step) * step
 
@@ -197,23 +197,29 @@ with tab2:
 with tab3:
     st.markdown("### MLSS – Palier **30 min** à **vitesse constante** (saisie toutes les 5 min)")
 
-    # 1) Saisie SV2 et proposition 96% SV2
+    # 1) SV2 et proposition 96% SV2
     c0, c1 = st.columns([1.2, 1])
     with c0:
         sv2 = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
     with c1:
         suggested_from_sv2 = round_to_step(sv2 * 0.96, 0.1) if sv2 and sv2 > 0 else None
 
-    # 2) Vitesse cible test MLSS (pré-remplie par 96% SV2 si dispo, sinon 85% VMA)
-    default_speed = suggested_from_sv2 if suggested_from_sv2 else round_to_step(vma * 0.85, 0.1)
+    # 2) Vitesse cible MLSS (pré-remplie par 96% SV2 ou 85% VMA)
+    default_speed = suggested_from_sv2 if suggested_from_sv2 is not None else round_to_step(vma * 0.85, 0.1)
+    # sécurise la valeur par défaut dans les bornes du widget
+    MIN_V, MAX_V = 5.0, 30.0
+    if default_speed is None or not np.isfinite(default_speed):
+        default_speed = MIN_V
+    default_speed = float(np.clip(default_speed, MIN_V, MAX_V))
+
     v_target = st.number_input(
         "Vitesse cible du test MLSS (km/h)",
-        5.0, 30.0, float(default_speed), step=0.1
+        MIN_V, MAX_V, default_speed, step=0.1
     )
     if suggested_from_sv2:
         st.caption(f"Suggestion basée sur SV2: ≈ **{suggested_from_sv2:.1f} km/h** (96% de SV2)")
 
-    # 3) Tableau fixe 6 points (5,10,15,20,25,30)
+    # 3) Tableau fixe 6 points
     times = [5, 10, 15, 20, 25, 30]
     base = pd.DataFrame({
         "Temps (min)": times,
@@ -230,7 +236,6 @@ with tab3:
         if "Temps (min)" not in cur.columns:
             cur = base.copy()
         else:
-            # fusion sécurisée sur "Temps (min)"
             cur = base.merge(cur, on=["Temps (min)"], how="left", suffixes=("", "_y"))
             for col in ["Lactate (mmol/L)", "FC (bpm)", "Commentaires"]:
                 y = f"{col}_y"
@@ -255,7 +260,7 @@ with tab3:
     )
     st.session_state["df_mlss_lac"] = sanitize_mlss(df_display)
 
-    # 4) Analyse de stabilité (seuils internes non exposés)
+    # 4) Analyse interne
     DELTA_10_30_THR = 0.5  # mmol/L
     SLOPE_THR = 0.02       # mmol·L⁻¹·min⁻¹
 
@@ -316,8 +321,7 @@ with tab3:
         st.pyplot(fig_mlss)
         st.session_state["mlss_img_b64"] = fig_to_base64(fig_mlss)
 
-    # 6) Suggestion de vitesse pour prochain test
-    # Heuristique sans saisie utilisateur : step selon l'ampleur de la pente
+    # 6) Suggestion de vitesse
     def step_from_slope(s):
         a = abs(s)
         if a <= 0.02: return 0.2
@@ -330,7 +334,6 @@ with tab3:
         step = step_from_slope(slope)
         vs_from_sv2 = suggested_from_sv2  # peut être None
         if stable:
-            # Cohérence vs 96% SV2 si renseigné
             if vs_from_sv2:
                 suggestion = round_to_step(vs_from_sv2, 0.1)
                 rationale = "Stable : confirmer ~96% de SV2 pour validation finale."
@@ -339,8 +342,7 @@ with tab3:
                 rationale = "Stable : conserver la vitesse testée (ou affiner ±0,1–0,2 km/h)."
         else:
             if slope > SLOPE_THR:
-                # lactate monte → vitesse trop élevée
-                candidate = round_to_step(max(5.0, v_target - step), 0.1)
+                candidate = round_to_step(max(MIN_V, v_target - step), 0.1)
                 if vs_from_sv2 and vs_from_sv2 < v_target:
                     suggestion = vs_from_sv2
                     rationale = "Lactate en hausse : revenir vers ~96% SV2."
@@ -348,8 +350,7 @@ with tab3:
                     suggestion = candidate
                     rationale = f"Lactate en hausse : baisse ~{step:.1f} km/h."
             elif slope < -SLOPE_THR:
-                # lactate baisse → vitesse trop faible
-                candidate = round_to_step(min(30.0, v_target + step), 0.1)
+                candidate = round_to_step(min(MAX_V, v_target + step), 0.1)
                 if vs_from_sv2 and vs_from_sv2 > v_target:
                     suggestion = vs_from_sv2
                     rationale = "Lactate en baisse : se rapprocher de ~96% SV2."
@@ -374,7 +375,7 @@ with tab3:
             mime="image/png",
         )
 
-# -------------------- Tab4: SRS (identique version précédente) --------------------
+# -------------------- Tab4 & Tab5 (inchangés) --------------------
 with tab4:
     st.markdown("#### Paramétrage SRS")
     c1, c2, c3 = st.columns(3)
@@ -421,9 +422,6 @@ with tab4:
     cv1.metric("SV1 corrigée (km/h)", f"{sv1_corr:.2f}" if sv1_corr else "—")
     cv2.metric("SV2 corrigée (km/h)", f"{sv2_corr:.2f}" if sv2_corr else "—")
 
-    # (Graphique comparatif optionnel)
-
-# -------------------- Tab5: Historique --------------------
 with tab5:
     st.markdown("### Historique local (session)")
     hist = st.session_state.get("historique", [])
