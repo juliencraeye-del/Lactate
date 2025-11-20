@@ -137,7 +137,94 @@ with tab2:
     st.pyplot(fig2)
 
 # ---------------- Tab3: MLSS ----------------
-# (Code MLSS complet déjà fourni dans le message précédent)
+with tab3:
+    st.markdown("#### MLSS – Paramètres et saisie")
+    sv2_mlss = st.number_input("Vitesse SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    mlss_use_percent = st.toggle("Utiliser % de SV2 (sinon Delta fixe)", value=True)
+    if mlss_use_percent:
+        pct_mlss = st.number_input("Pourcentage de SV2 (%)", 80.0, 100.0, 96.0, step=0.5)
+        v_theo_mlss = (sv2_mlss * pct_mlss/100.0) if sv2_mlss > 0 else None
+        mlss_method = "Pourcentage SV2"
+        mlss_param = f"{pct_mlss:.1f}%"
+    else:
+        delta_mlss = st.number_input("Delta vs SV2 (km/h)", -5.0, 5.0, -0.6, step=0.1)
+        v_theo_mlss = (sv2_mlss + delta_mlss) if sv2_mlss > 0 else None
+        mlss_method = "Delta fixe"
+        mlss_param = f"{delta_mlss:.1f} km/h"
+
+    st.metric("Vitesse théorique MLSS", f"{v_theo_mlss:.1f}" if v_theo_mlss else "—")
+
+    if "df_mlss_lac" not in st.session_state:
+        st.session_state.df_mlss_lac = pd.DataFrame({
+            "Temps (min)": list(range(0, 35, 5)),
+            "Lactate (mmol/L)": [None]*7,
+            "FC (bpm)": [None]*7,
+            "Commentaires": ["" for _ in range(7)]
+        })
+
+    with st.form(key="mlss_form", clear_on_submit=False):
+        df_mlss = st.data_editor(st.session_state.df_mlss_lac, width="stretch", hide_index=True)
+        submitted_mlss = st.form_submit_button("💾 Enregistrer MLSS")
+        if submitted_mlss:
+            st.session_state.df_mlss_lac = sanitize_mlss(df_mlss)
+            st.success("Saisie MLSS enregistrée.")
+
+    plot_df = sanitize_mlss(st.session_state.df_mlss_lac)
+
+    incoherences = []
+    lactates = plot_df["Lactate (mmol/L)"].to_numpy()
+    times = plot_df["Temps (min)"].to_numpy()
+    for i in range(1, len(lactates)):
+        if pd.notna(lactates[i]) and pd.notna(lactates[i-1]):
+            if abs(lactates[i] - lactates[i-1]) > 1.0:
+                incoherences.append((times[i], lactates[i]))
+
+    mlss_img_b64 = None
+    if plot_df["Lactate (mmol/L)"].notna().sum() >= 2:
+        fig_mlss, ax_mlss = plt.subplots(figsize=(6,3.5))
+        ax_mlss.plot(plot_df["Temps (min)"], plot_df["Lactate (mmol/L)"], "o-", color="#0078d4")
+        if incoherences:
+            inco_times, inco_vals = zip(*incoherences)
+            ax_mlss.scatter(inco_times, inco_vals, color="red", s=80, label="Incohérence")
+            ax_mlss.legend()
+        ax_mlss.set_title("MLSS – évolution du lactate")
+        ax_mlss.set_xlabel("Temps (min)"); ax_mlss.set_ylabel("Lactate (mmol/L)")
+        ax_mlss.grid(True, alpha=0.3)
+        st.pyplot(fig_mlss)
+        mlss_img_b64 = fig_to_base64(fig_mlss)
+
+    suggestion = "—"
+    if len(lactates) >= 2 and pd.notna(lactates[-1]) and pd.notna(lactates[0]):
+        delta = lactates[-1] - lactates[0]
+        if delta > 1.0:
+            suggestion = "Réduire vitesse de ~0,3 km/h"
+        elif delta < -1.0:
+            suggestion = "Augmenter vitesse de ~0,3 km/h"
+        else:
+            suggestion = "Vitesse OK"
+
+    # Indicateur visuel coloré
+    if "Réduire" in suggestion:
+        st.markdown(f"<p style='color:red;font-weight:bold;'>⚠️ {suggestion}</p>", unsafe_allow_html=True)
+    elif "Augmenter" in suggestion:
+        st.markdown(f"<p style='color:orange;font-weight:bold;'>⚠️ {suggestion}</p>", unsafe_allow_html=True)
+    elif "OK" in suggestion:
+        st.markdown(f"<p style='color:green;font-weight:bold;'>✅ {suggestion}</p>", unsafe_allow_html=True)
+    else:
+        st.write(f"Suggestion : {suggestion}")
+
+    st.write(f"Incohérences détectées : {len(incoherences)}")
+
+    st.session_state.mlss_params = {
+        "sv2": round(sv2_mlss,1) if sv2_mlss>0 else "—",
+        "method": mlss_method,
+        "param": mlss_param,
+        "v_theo": round(v_theo_mlss,1) if v_theo_mlss else "—",
+        "mlss_ctrl_inco": len(incoherences),
+        "mlss_ctrl_suggest_note": suggestion,
+    }
+    st.session_state.mlss_img_b64 = mlss_img_b64
+
 
 # ---------------- Tab4: SRS ----------------
 with tab4:
