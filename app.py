@@ -54,7 +54,7 @@ def round_to_step(val, step=0.1):
     if val is None: return None
     return round(val/step)*step
 
-# ----- MLSS control -----
+# ---- MLSS control ----
 def mlss_control(df_mlss: pd.DataFrame, amplitude_thr: float = 1.0):
     """
     Contrôle MLSS (fenêtre 10–30 min):
@@ -68,25 +68,21 @@ def mlss_control(df_mlss: pd.DataFrame, amplitude_thr: float = 1.0):
         "stable": None, "suggest_kmh": None, "suggest_note": None
     }
     if df_mlss is None or df_mlss.empty: return result
-
     win = df_mlss[(df_mlss["Temps (min)"] >= 10) & (df_mlss["Temps (min)"] <= 30)].dropna(subset=["Lactate (mmol/L)"])
     if win.empty or win["Lactate (mmol/L)"].notna().sum() < 2:
         result["n_points"] = int(win["Lactate (mmol/L)"].notna().sum())
         result["suggest_note"] = "Données insuffisantes (≥2 points 10–30')."
         return result
-
     lac = win["Lactate (mmol/L)"].to_numpy(); t = win["Temps (min)"].to_numpy()
     result["n_points"] = int(len(lac))
     amp = float(np.nanmax(lac) - np.nanmin(lac))
     result["amplitude"] = amp
-
     # Pente linéaire
     try:
         slope = float(np.polyfit(t, lac, 1)[0])
     except Exception:
         slope = None
     result["slope_mmol_per_min"] = slope
-
     # Δ10→30' si dispo
     lac_10 = win[win["Temps (min)"]==10]["Lactate (mmol/L)"]
     lac_30 = win[win["Temps (min)"]==30]["Lactate (mmol/L)"]
@@ -94,11 +90,9 @@ def mlss_control(df_mlss: pd.DataFrame, amplitude_thr: float = 1.0):
     if lac_10.notna().any() and lac_30.notna().any():
         d10_30 = float(lac_30.iloc[-1] - lac_10.iloc[0])
     result["delta_10_30"] = d10_30
-
     # Stabilité
     stable = (amp <= amplitude_thr)
     result["stable"] = stable
-
     # Suggestion vitesse (fallback cohérent) :
     suggest = 0.0
     note = "Variation ≤ 1.0 mmol/L : vitesse convenable." if stable else "Instabilité détectée (amplitude > 1.0 mmol/L)."
@@ -117,11 +111,10 @@ def mlss_control(df_mlss: pd.DataFrame, amplitude_thr: float = 1.0):
             elif +0.05 <= slope <= +0.15: suggest = -0.2; note = "Pente positive (+0,05 à +0,15) : réduire ~0,2 km/h."
             elif slope < -0.15: suggest = +0.3; note = "Pente négative (< −0,15) : augmenter ~0,3 km/h."
             elif -0.15 <= slope <= -0.05: suggest = +0.2; note = "Pente négative (−0,05 à −0,15) : augmenter ~0,2 km/h."
-            else:
-                suggest = 0.0; note = "Pente faible; ajuste au besoin selon protocole."
-        elif stable:
-            suggest = 0.0; note = "Stabilité satisfaisante."
-
+        else:
+            suggest = 0.0; note = "Pente faible; ajuste au besoin selon protocole."
+    elif stable:
+        suggest = 0.0; note = "Stabilité satisfaisante."
     result["suggest_kmh"] = suggest
     result["suggest_note"] = note
     return result
@@ -132,8 +125,7 @@ vma = st.sidebar.number_input("VMA (km/h)", 5.0, 30.0, 17.0, step=0.1)
 bsn = st.sidebar.number_input("Lactate de base Bsn (mmol/L)", 0.5, 4.0, 1.5, step=0.1)
 n = st.sidebar.number_input("Nombre de paliers", 6, 20, 10, step=1)
 pct_start = st.sidebar.number_input("%VMA départ", 40.0, 80.0, 60.0, step=1.0)
-pct_end   = st.sidebar.number_input("%VMA final",  80.0, 120.0, 105.0, step=1.0)
-
+pct_end = st.sidebar.number_input("%VMA final", 80.0, 120.0, 105.0, step=1.0)
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Réinitialiser la séance"):
     for k in ["grid_df_data","df_mlss_lac","mlss_params","mlss_img_b64",
@@ -143,7 +135,7 @@ if st.sidebar.button("🔄 Réinitialiser la séance"):
 st.sidebar.caption(f"Version {VERSION}")
 
 # ---------------- Base DF ----------------
-pcts   = np.linspace(pct_start, pct_end, int(n))
+pcts = np.linspace(pct_start, pct_end, int(n))
 speeds = vma * pcts / 100.0
 def pace_min_per_km(s): return 60/s if s>0 else np.nan
 def pace_mmss(s):
@@ -151,7 +143,6 @@ def pace_mmss(s):
     p = 60/s; m = int(p); sec = int(round((p-m)*60))
     if sec==60: m+=1; sec=0
     return f"{m:02d}:{sec:02d}"
-
 base_df = pd.DataFrame({
     "Palier": np.arange(1,int(n)+1),
     "%VMA": np.round(pcts,2),
@@ -165,43 +156,39 @@ base_df = sanitize_df(base_df)
 
 # ---------------- Tabs ----------------
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["📝 Saisie", "📈 Résultats", "🧪 MLSS", "🏃‍♂️ SRS (Step–Ramp–Step)", "🗂️ Historique"]
+    ["📝 Saisie", "📈 Résultats", "🧪 MLSS", "🏃‍♂️ SRS (Step–Ramp–Step)", "📂 Historique"]
 )
 
-# ---------------- Tab1: Saisie (form) ----------------
+# ---------------- Tab1: Saisie ----------------
 with tab1:
     # Init unique et pas d'écrasement par base_df ensuite
     if "grid_df_data" not in st.session_state:
         st.session_state["grid_df_data"] = base_df.copy()
     else:
         st.session_state["grid_df_data"] = sanitize_df(st.session_state["grid_df_data"])
-
     st.markdown("### Saisie des lactates (et FC mesurée si dispo)")
-
     with st.form(key="saisie_form", clear_on_submit=False):
         df_edit = st.data_editor(
             st.session_state["grid_df_data"], key="grid_editor",
             num_rows="fixed", width="stretch", hide_index=True
         )
         athlete = st.text_input("Athlète", value=st.session_state.get("athlete","Anonyme"))
-        date_s  = st.date_input("Date").isoformat()
-        note    = st.text_input("Notes", value=st.session_state.get("note",""))
+        date_s = st.date_input("Date").isoformat()
+        note = st.text_input("Notes", value=st.session_state.get("note",""))
         submitted = st.form_submit_button("💾 Enregistrer la saisie")
-    if submitted:
-        st.session_state["grid_df_data"] = sanitize_df(df_edit)
-        st.session_state.update({"athlete":athlete,"date":date_s,"note":note})
-        st.success("Saisie enregistrée.")
-
+        if submitted:
+            st.session_state["grid_df_data"] = sanitize_df(df_edit)
+            st.session_state.update({"athlete":athlete,"date":date_s,"note":note})
+            st.success("Saisie enregistrée.")
     # Export CSV rapide
     out_df = sanitize_df(st.session_state["grid_df_data"].copy())
     out_df = ensure_columns(out_df, ["Lactate (mmol/L)"])
     out_df["log10(lactate)"] = np.where(pd.to_numeric(out_df["Lactate (mmol/L)"], errors="coerce")>0,
-                                        np.log10(pd.to_numeric(out_df["Lactate (mmol/L)"], errors="coerce")),
-                                        np.nan)
+                                        np.log10(pd.to_numeric(out_df["Lactate (mmol/L)"], errors="coerce")), np.nan)
     buf = io.StringIO(); out_df.to_csv(buf,index=False)
     st.download_button("📄 Télécharger CSV", data=buf.getvalue(),
-                       file_name=f"seance_{st.session_state.get('athlete','Anonyme')}_{st.session_state.get('date','')}.csv",
-                       mime="text/csv")
+        file_name=f"seance_{st.session_state.get('athlete','Anonyme')}_{st.session_state.get('date','')}.csv",
+        mime="text/csv")
 
 # ---------------- Tab2: Résultats + Export HTML ----------------
 with tab2:
@@ -209,36 +196,30 @@ with tab2:
     df_calc = ensure_columns(df_calc, ["Vitesse (km/h)","Lactate (mmol/L)"])
     x = pd.to_numeric(df_calc["Vitesse (km/h)"], errors="coerce").to_numpy()
     y = pd.to_numeric(df_calc["Lactate (mmol/L)"], errors="coerce").to_numpy()
-
     # Graphe Lactate - Vitesse
     fig1, ax1 = plt.subplots(figsize=(7,4))
     ax1.plot(x, y, "o-", color="#1f77b4")
     ax1.set_xlabel("Vitesse (km/h)"); ax1.set_ylabel("Lactate (mmol/L)")
     ax1.grid(True, alpha=0.3)
     st.pyplot(fig1)
-
     # Graphe Log-lactate - Vitesse
     fig2, ax2 = plt.subplots(figsize=(7,4))
     mask = y>0
     if np.sum(mask) > 1:
         ax2.plot(x[mask], np.log10(y[mask]), "o-", color="#1f77b4")
-    ax2.set_xlabel("Vitesse (km/h)"); ax2.set_ylabel("log10(lactate)")
-    ax2.grid(True, alpha=0.3)
+        ax2.set_xlabel("Vitesse (km/h)"); ax2.set_ylabel("log10(lactate)")
+        ax2.grid(True, alpha=0.3)
     st.pyplot(fig2)
-
     img1_b64 = fig_to_base64(fig1)
     img2_b64 = fig_to_base64(fig2)
-
     # MLSS et SRS (pour export)
     df_mlss = sanitize_mlss(st.session_state.get("df_mlss_lac", pd.DataFrame()))
     mlss_table_html = df_mlss.to_html(index=False) if not df_mlss.empty else ""
-    mlss_img_b64    = st.session_state.get("mlss_img_b64", None)
-    mlss_params     = st.session_state.get("mlss_params", {})
-
-    srs         = st.session_state.get("srs_results", {})
+    mlss_img_b64 = st.session_state.get("mlss_img_b64", None)
+    mlss_params = st.session_state.get("mlss_params", {})
+    srs = st.session_state.get("srs_results", {})
     srs_img_b64 = st.session_state.get("srs_img_b64", None)
-
-    # HTML autonome: balises <img> partout
+    # HTML autonome: balises <img> partout (au format data URI)
     html = f"""
     <!DOCTYPE html>
     <html lang="fr"><head><meta charset="utf-8">
@@ -253,9 +234,9 @@ with tab2:
       img {{ max-width: 100%; height: auto; border:1px solid #eee; }}
     </style></head><body>
       <h1>Rapport – Test lactate & SRS</h1>
-      <p class="meta"><b>Athlète:</b> {st.session_state.get("athlete","Anonyme")} &nbsp;
-         <b>Date:</b> {st.session_state.get("date","")} &nbsp;
-         <b>VMA:</b> {vma:.2f} km/h &nbsp; <b>Bsn:</b> {bsn:.2f} mmol/L</p>
+      <p class="meta"><b>Athlète:</b> {st.session_state.get("athlete","Anonyme")}
+      <b>Date:</b> {st.session_state.get("date","")}
+      <b>VMA:</b> {vma:.2f} km/h <b>Bsn:</b> {bsn:.2f} mmol/L</p>
       <p class="meta"><b>Notes:</b> {st.session_state.get("note","")}</p>
 
       <h2>Données brutes</h2>
@@ -274,13 +255,14 @@ with tab2:
         <li><b>Paramètre</b> : {mlss_params.get("param","—")}</li>
         <li><b>Vitesse théorique MLSS</b> : {mlss_params.get("v_theo","—")} km/h</li>
         <li><b>Contrôle MLSS (10–30')</b> :
-            points={mlss_params.get("mlss_ctrl_n","0")},
-            amplitude={mlss_params.get("mlss_ctrl_amp","—")} mmol/L,
-            pente={mlss_params.get("mlss_ctrl_slope","—")} mmol/L/min,
-            Δ10→30'={mlss_params.get("mlss_ctrl_d10_30","—")} mmol/L,
-            stable={mlss_params.get("mlss_ctrl_stable","—")}</li>
+          points={mlss_params.get("mlss_ctrl_n","0")},
+          amplitude={mlss_params.get("mlss_ctrl_amp","—")} mmol/L,
+          pente={mlss_params.get("mlss_ctrl_slope","—")} mmol/L/min,
+          Δ10→30'={mlss_params.get("mlss_ctrl_d10_30","—")} mmol/L,
+          stable={mlss_params.get("mlss_ctrl_stable","—")}
+        </li>
         <li><b>Suggestion vitesse</b> : {mlss_params.get("mlss_ctrl_suggest_note","—")}
-            → vitesse conseillée : {mlss_params.get("mlss_ctrl_v_suggest","—")} km/h</li>
+        → vitesse conseillée : {mlss_params.get("mlss_ctrl_v_suggest","—")} km/h</li>
       </ul>
       {mlss_table_html}
       {"<img src=\"data:image/png;base64,"+mlss_img_b64+"\" alt=\"Courbe MLSS\"/>" if mlss_img_b64 else "<p><i>(Ajoutez ≥2 valeurs 10–30' pour la courbe MLSS.)</i></p>"}
@@ -299,38 +281,41 @@ with tab2:
       <p class="meta" style="margin-top:24px;">Généré par l’app Streamlit (version {VERSION}).</p>
     </body></html>
     """
-
     st.download_button("🧾 Télécharger le rapport HTML",
-                       data=html.encode("utf-8"),
-                       file_name=f"rapport_{st.session_state.get('athlete','Anonyme')}.html",
-                       mime="text/html")
+        data=html.encode("utf-8"),
+        file_name=f"rapport_{st.session_state.get('athlete','Anonyme')}.html",
+        mime="text/html"
+    )
 
 # ---------------- Tab3: MLSS ----------------
 with tab3:
     st.markdown("#### MLSS – Paramètres et saisie")
     sv2_mlss = st.number_input("Vitesse SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
-
     mlss_use_percent = st.toggle("Utiliser % de SV2 (sinon Delta fixe)", value=True)
     if mlss_use_percent:
         pct_mlss = st.number_input("Pourcentage de SV2 (%)", 80.0, 100.0, 96.0, step=0.5)
         v_theo_mlss = (sv2_mlss * pct_mlss/100.0) if sv2_mlss > 0 else None
         mlss_method = "Pourcentage SV2"
-        mlss_param  = f"{pct_mlss:.1f}%"
+        mlss_param = f"{pct_mlss:.1f}%"
     else:
         delta_mlss = st.number_input("Delta vs SV2 (km/h)", -5.0, 5.0, -0.6, step=0.1)
         v_theo_mlss = (sv2_mlss + delta_mlss) if sv2_mlss > 0 else None
         mlss_method = "Delta fixe"
-        mlss_param  = f"{delta_mlss:.1f} km/h"
+        mlss_param = f"{delta_mlss:.1f} km/h"
 
     st.metric("Vitesse théorique MLSS", f"{v_theo_mlss:.1f}" if v_theo_mlss else "—")
 
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # ✅ Correction : 10 paliers (0 à 45 min par pas de 5)
     if "df_mlss_lac" not in st.session_state:
         st.session_state.df_mlss_lac = pd.DataFrame({
-            "Temps (min)": [0,5,10,15,20,25,30],
-            "Lactate (mmol/L)": [None]*7,
-            "FC (bpm)": [None]*7,
-            "Commentaires": [""]*7
+            "Temps (min)": list(range(0, 50, 5)),  # 0,5,10,...,45
+            "Lactate (mmol/L)": [None]*10,
+            "FC (bpm)": [None]*10,
+            "Commentaires": ["" for _ in range(10)]
         })
+    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
     df_mlss = st.data_editor(st.session_state.df_mlss_lac, width="stretch", hide_index=True)
     st.session_state.df_mlss_lac = sanitize_mlss(df_mlss)
 
@@ -358,7 +343,7 @@ with tab3:
     cD.metric("Δ10→30' (mmol/L)", f"{ctrl['delta_10_30']:.2f}" if ctrl["delta_10_30"] is not None else "—")
 
     st.info(f"Stabilité : {'✅ Stable' if ctrl['stable'] else '⚠️ Instable' if ctrl['stable'] is not None else '—'}")
-    st.write(f"Suggestion : {ctrl['suggest_note']} → **Vitesse conseillée**: {v_suggest if v_suggest is not None else '—'} km/h")
+    st.write(f"Suggestion : {ctrl['suggest_note']} → **Vitesse conseillée** : {v_suggest if v_suggest is not None else '—'} km/h")
 
     st.session_state.mlss_params = {
         "sv2": round(sv2_mlss,1) if sv2_mlss>0 else "—",
@@ -381,20 +366,18 @@ with tab4:
     c1, c2, c3 = st.columns(3)
     with c1:
         slope = st.number_input("Pente rampe (km/h/min)", 0.0, 10.0, 0.0, step=0.1)
-        sv1   = st.number_input("SV1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
-        sv2   = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+        sv1 = st.number_input("SV1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+        sv2 = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
     with c2:
         delta_step2 = st.number_input("Delta Step2 (km/h, ex. -0,8)", -5.0, 5.0, -0.8, step=0.1)
-        step1       = st.number_input("Vitesse Step 1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
-        vo2_1       = st.number_input("VO₂ Step 1 (ml·kg⁻¹·min⁻¹)", 0.0, 100.0, 0.0, step=0.1)
+        step1 = st.number_input("Vitesse Step 1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+        vo2_1 = st.number_input("VO₂ Step 1 (ml·kg⁻¹·min⁻¹)", 0.0, 100.0, 0.0, step=0.1)
     with c3:
-        v_equiv1    = st.number_input("Vitesse équivalente VO₂ Step 1 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
-        vo2_2       = st.number_input("VO₂ Step 2 (ml·kg⁻¹·min⁻¹) (optionnel)", 0.0, 100.0, 0.0, step=0.1)
-        v_equiv2    = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
-
+        v_equiv1 = st.number_input("Vitesse équivalente VO₂ Step 1 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
+        vo2_2 = st.number_input("VO₂ Step 2 (ml·kg⁻¹·min⁻¹) (optionnel)", 0.0, 100.0, 0.0, step=0.1)
+        v_equiv2 = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
     step2 = sv2 + delta_step2 if sv2 > 0 else None
     st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 else "—")
-
     mrt1 = mrt2 = mrt_used = None
     if slope and slope > 0:
         alpha_s = slope / 60.0
@@ -404,22 +387,18 @@ with tab4:
             mrt2 = (v_equiv2 - step2) / alpha_s
         candidates = [x for x in [mrt1, mrt2] if x and x > 0]
         mrt_used = float(np.mean(candidates)) if candidates else None
-
     cm1, cm2, cm3 = st.columns(3)
     cm1.metric("MRT Step 1 (s)", f"{mrt1:.0f}" if mrt1 else "—")
     cm2.metric("MRT Step 2 (s)", f"{mrt2:.0f}" if mrt2 else "—")
     cm3.metric("MRT utilisé (s)", f"{mrt_used:.0f}" if mrt_used else "—")
-
     sv1_corr = sv2_corr = None
     if mrt_used and slope and slope > 0:
         alpha_s = slope / 60.0
         if sv1 and sv1 > 0: sv1_corr = sv1 - alpha_s * mrt_used
         if sv2 and sv2 > 0: sv2_corr = sv2 - alpha_s * mrt_used
-
     cv1, cv2 = st.columns(2)
     cv1.metric("SV1 corrigée (km/h)", f"{sv1_corr:.2f}" if sv1_corr else "—")
     cv2.metric("SV2 corrigée (km/h)", f"{sv2_corr:.2f}" if sv2_corr else "—")
-
     srs_img_b64 = None
     labels, raw_vals, corr_vals = [], [], []
     if sv1 and sv1 > 0:
@@ -436,7 +415,6 @@ with tab4:
         ax_srs.legend(); ax_srs.grid(axis="y", alpha=0.3)
         st.pyplot(fig_srs)
         srs_img_b64 = fig_to_base64(fig_srs)
-
     st.session_state.srs_results = {
         "slope": slope if slope>0 else "—",
         "sv1": sv1 if sv1>0 else None,
@@ -457,7 +435,6 @@ with tab5:
     st.markdown("### Historique local (session)")
     hist = st.session_state.get("historique", [])
     st.write(f"Nombre de séances : **{len(hist)}**")
-
     uploaded = st.file_uploader("Importer une séance (CSV)", type=["csv"])
     if uploaded:
         try:
@@ -466,19 +443,17 @@ with tab5:
             st.success("Séance importée (onglet Saisie).")
         except Exception as e:
             st.error(f"Erreur import CSV : {e}")
-
     if st.button("➕ Ajouter la séance courante à l'historique"):
         rec = {
             "athlete": st.session_state.get("athlete","Anonyme"),
-            "date":    st.session_state.get("date",""),
-            "note":    st.session_state.get("note",""),
+            "date": st.session_state.get("date",""),
+            "note": st.session_state.get("note",""),
             "vma": float(vma), "bsn": float(bsn),
             "df": sanitize_df(st.session_state["grid_df_data"].copy())
         }
         hist.append(rec)
         st.session_state["historique"] = hist
         st.success("Séance ajoutée à l’historique.")
-
     if hist:
         concat_rows = []
         for rec in hist:
