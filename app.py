@@ -18,6 +18,13 @@ import streamlit.components.v1 as components
 VERSION = "0.9.1"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
+# Header with logo
+col_header = st.columns([0.12,0.88])
+with col_header[0]:
+    show_logo()
+with col_header[1]:
+    st.markdown("## Seuils Lactate – VMA")
+
 LOGO_PATH = "logo.png"   # facultatif
 
 # -------------------- Helpers --------------------
@@ -97,8 +104,7 @@ with ath_tab:
 with lactate_tab:
     show_logo()
     st.markdown("### Outil Analyse Lactate")
-    components.html('<iframe src=\"https://www.exphyslab.com/lactate\" style=\"width:100%;height:800px;border:none;\"></iframe>', height=820)
-st.info('Privilégier **Bsln+0.5** pour SL1 et **modDmax** pour SL2')
+    st.markdown("https://www.exphyslab.com/lactate")
 
 # -------------------- MLSS --------------------
 with mlss_tab:
