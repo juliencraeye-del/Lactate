@@ -1,40 +1,37 @@
 
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.8.0)
-# Ajouts:
-# - Onglet Fiche Athlète
-# - Onglet Analyse Lactate (iframe exphyslab)
-# - MLSS avec timer + son d'alerte toutes les 5 min
-# - Logo sur chaque onglet
+# Seuils Lactate – VMA (v0.8.1)
+# - Logo affiché sur chaque onglet (logo.png)
+# - Beep réel (beep.wav)
+# - Onglets: Fiche Athlète, Analyse Lactate (iframe), MLSS avec timer + alertes sonores, SRS
 
-import io, base64, time
+import io, time
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
-# Charger logo
-LOGO_PATH = "Sans titre (Livret (210 x 297 mm)).png"
-
-# Préparer son beep (base64)
-beep_data = b"UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA="  # silence placeholder
+LOGO_PATH = "logo.png"  # Assurez-vous que logo.png est dans le même dossier
+BEEP_PATH = "beep.wav"  # Assurez-vous que beep.wav est dans le même dossier
 
 # Sidebar
-st.sidebar.image(LOGO_PATH, width=120)
+if LOGO_PATH:
+    st.sidebar.image(LOGO_PATH, width=120)
 st.sidebar.header("Paramètres")
 vma = st.sidebar.number_input("VMA (km/h)",5.0,30.0,17.0,step=0.1)
 bsn = st.sidebar.number_input("Lactate Bsn (mmol/L)",0.5,4.0,1.5,step=0.1)
 st.sidebar.caption(f"Version {VERSION}")
 
 # Tabs
-ath_tab, lactate_tab, mlss_tab, srs_tab = st.tabs([" Fiche Athlète","📊 Analyse Lactate","🧪 MLSS","🏃‍♂️ SRS"])
+ath_tab, lactate_tab, mlss_tab, srs_tab = st.tabs(["👤 Fiche Athlète","📊 Analyse Lactate","🧪 MLSS","🏃‍♂️ SRS"])
 
 # Onglet Fiche Athlète
 with ath_tab:
-    st.image(LOGO_PATH, width=100)
+    if LOGO_PATH:
+        st.image(LOGO_PATH, width=100)
     st.markdown("### Fiche signalétique")
     with st.form("ath_form"):
         nom = st.text_input("Nom", st.session_state.get("nom",""))
@@ -51,24 +48,28 @@ with ath_tab:
             st.session_state.update({"nom":nom,"prenom":prenom,"dob":str(dob),"sexe":sexe,"poids":poids,"taille":taille,"club":club,"email":email,"tel":tel})
             st.success("Fiche enregistrée")
 
-# Onglet Analyse Lactate (iframe)
+# Onglet Analyse Lactate
 with lactate_tab:
-    st.image(LOGO_PATH, width=100)
+    if LOGO_PATH:
+        st.image(LOGO_PATH, width=100)
     st.markdown("### Outil Analyse Lactate")
     st.markdown('<iframe src="https://www.exphyslab.com/lactate" width="100%" height="800"></iframe>', unsafe_allow_html=True)
 
 # Onglet MLSS
 with mlss_tab:
-    st.image(LOGO_PATH, width=100)
+    if LOGO_PATH:
+        st.image(LOGO_PATH, width=100)
     st.markdown("### MLSS – Palier 30 min")
-    if "start_time" not in st.session_state: st.session_state["start_time"] = time.time()
+    if "start_time" not in st.session_state:
+        st.session_state["start_time"] = time.time()
     elapsed = int(time.time()-st.session_state["start_time"])
     remaining = max(0,1800-elapsed)
     mins,secs = divmod(remaining,60)
     st.markdown(f"⏱ Temps restant : **{mins:02d}:{secs:02d}**")
     if remaining>0 and remaining%300<2:
         st.warning("Alerte : point lactate !")
-        st.audio(beep_data, format="audio/wav")
+        if BEEP_PATH:
+            st.audio(BEEP_PATH)
     # Tableau MLSS
     times=[5,10,15,20,25,30]
     if "df_mlss" not in st.session_state:
@@ -102,5 +103,6 @@ with mlss_tab:
 
 # Onglet SRS
 with srs_tab:
-    st.image(LOGO_PATH, width=100)
+    if LOGO_PATH:
+        st.image(LOGO_PATH, width=100)
     st.markdown("### SRS – à compléter")
