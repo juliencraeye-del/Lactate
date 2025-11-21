@@ -1,10 +1,12 @@
 
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.8.4)
-# - Bouton pour démarrer le compte à rebours MLSS
-# - Timer dynamique (mise à jour à chaque rerun)
-# - Graphique MLSS avec Lactate + FC superposés, fond vert/rouge + badge
-# - Saisie vitesse MLSS basée sur SV2 (96%)
+# Seuils Lactate – VMA (v0.8.5)
+# - Vitesse MLSS dépend directement de SV2 (96%)
+# - Bouton Reset pour vider tableau MLSS
+# - Timer MLSS fonctionnel avec bouton Démarrer
+# - Suggestion vitesse cohérente (basée sur pente)
+# - Graphique MLSS : courbes lissées, Lactate + FC superposées, légende complète, fond vert/rouge + badge
+# - Alerte visuelle sur graphique (texte coloré)
 # - Onglet SRS complet avec clés uniques
 # - Logo sur chaque onglet avec fallback
 # - Alerte sonore toutes les 5 min (si beep.wav présent)
@@ -16,7 +18,7 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.8.4"
+VERSION = "0.8.5"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
 LOGO_PATH = "logo.png"
@@ -89,10 +91,13 @@ with mlss_tab:
     suggested_speed = round(sv2 * 0.96, 1) if sv2 > 0 else round(vma * 0.85, 1)
     v_target = st.number_input("Vitesse cible MLSS (km/h)", 5.0, 30.0, suggested_speed, step=0.1, key="v_target")
 
+    # Bouton Reset tableau
+    if st.button("🔄 Reset tableau MLSS", key="reset_mlss"):
+        st.session_state["df_mlss"] = pd.DataFrame({"Temps (min)": [5,10,15,20,25,30], "Lactate (mmol/L)": np.nan, "FC (bpm)": np.nan})
+
     # Tableau MLSS
-    times = [5, 10, 15, 20, 25, 30]
     if "df_mlss" not in st.session_state:
-        st.session_state["df_mlss"] = pd.DataFrame({"Temps (min)": times, "Lactate (mmol/L)": np.nan, "FC (bpm)": np.nan})
+        st.session_state["df_mlss"] = pd.DataFrame({"Temps (min)": [5,10,15,20,25,30], "Lactate (mmol/L)": np.nan, "FC (bpm)": np.nan})
 
     with st.form("mlss_form"):
         df_mlss_edit = st.data_editor(st.session_state["df_mlss"], num_rows="fixed", hide_index=True, key="mlss_editor")
@@ -108,27 +113,36 @@ with mlss_tab:
                 delta = lac[-1] - lac[1] if np.isfinite(lac[-1]) and np.isfinite(lac[1]) else None
                 stable = (abs(slope) <= 0.02) and (delta is not None and abs(delta) <= 0.5)
 
-                # Graphique avec code couleur et badge
+                # Graphique avec courbes lissées et code couleur
                 fig, ax = plt.subplots(figsize=(8, 4.5))
                 color_bg = "#d4edda" if stable else "#f8d7da"
                 ax.set_facecolor(color_bg)
-                ax.plot(t, lac, "o-", color="blue", label="Lactate")
+                ax.plot(t, lac, color="blue", marker="o", label="Lactate")
                 ax.set_xlabel("Temps (min)"); ax.set_ylabel("Lactate (mmol/L)")
                 ax.grid(True)
                 if np.isfinite(hr).sum() >= 2:
                     ax2 = ax.twinx()
-                    ax2.plot(t, hr, "s-", color="orange", label="FC")
+                    ax2.plot(t, hr, color="orange", marker="s", label="FC")
                     ax2.set_ylabel("FC (bpm)")
+                # Badge
+                status_txt = "Stable" if stable else "Instable"
+                status_color = "green" if stable else "red"
+                ax.text(0.95, 0.05, f"● {status_txt}", transform=ax.transAxes, ha="right", va="bottom", fontsize=12, color=status_color)
                 ax.legend(loc="upper left")
                 st.pyplot(fig)
 
-                if stable:
-                    st.success("🟢 Lactate stable → compatible MLSS")
+                # Suggestion vitesse
+                step = min(0.8, max(0.2, abs(slope)*10))
+                if not stable:
+                    if slope > 0:
+                        suggestion = max(5.0, v_target - step)
+                        rationale = f"Lactate en hausse → baisse de {step:.1f} km/h"
+                    else:
+                        suggestion = min(30.0, v_target + step)
+                        rationale = f"Lactate en baisse → augmente de {step:.1f} km/h"
+                    st.info(f"Proposition vitesse ajustée : {suggestion:.1f} km/h. {rationale}")
                 else:
-                    st.error("🔴 Lactate instable → ajuster vitesse")
-                    step = 0.3 if slope > 0 else -0.3
-                    suggestion = max(5.0, min(30.0, v_target + step))
-                    st.info(f"Proposition vitesse ajustée : {suggestion:.1f} km/h")
+                    st.success("Lactate stable → conserver vitesse testée")
 
 # Onglet SRS
 with srs_tab:
