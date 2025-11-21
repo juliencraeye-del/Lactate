@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.7.7 MLSS: saisie sans refresh, persistance session)
+# Seuils Lactate – VMA (v0.7.8)
+# - MLSS : saisie en une fois via st.form (pas de refresh pendant l'encodage)
+# - Graphique MLSS : signal vert/rouge selon stabilité (Δ10→30 & pente)
+# - Suggestion de vitesse ajustée si lactate instable
+# - SRS : formulaire autonome, toujours affiché
+
 import io, base64
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.7.7"
+VERSION = "0.7.8"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
 # -------------------- Helpers --------------------
@@ -21,6 +26,7 @@ def ensure_columns(df: pd.DataFrame, columns: list) -> pd.DataFrame:
 def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame()
+    # Retire d'éventuelles colonnes "FC estim..."
     for col in list(df.columns):
         if str(col).strip().lower().startswith("fc estim"):
             df.drop(columns=[col], inplace=True, errors="ignore")
@@ -35,6 +41,7 @@ def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def sanitize_mlss(df: pd.DataFrame) -> pd.DataFrame:
     df = ensure_columns(df, ["Temps (min)", "Lactate (mmol/L)", "FC (bpm)", "Commentaires"])
+    # Valeurs numériques
     df["Temps (min)"] = pd.to_numeric(df["Temps (min)"], errors="coerce")
     df["Lactate (mmol/L)"] = pd.to_numeric(df["Lactate (mmol/L)"], errors="coerce")
     df["FC (bpm)"] = pd.to_numeric(df["FC (bpm)"], errors="coerce")
@@ -44,8 +51,10 @@ def sanitize_mlss(df: pd.DataFrame) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 def fig_to_base64(fig, dpi=150):
-    buf = io.BytesIO(); fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
-    plt.close(fig); buf.seek(0)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", dpi=dpi)
+    plt.close(fig)
+    buf.seek(0)
     return base64.b64encode(buf.read()).decode("utf-8")
 
 def round_to_step(val, step=0.1):
@@ -159,7 +168,7 @@ with tab2:
 with tab3:
     st.markdown("### MLSS – Palier **30 min** à **vitesse constante** (saisie toutes les 5 min)")
 
-    # Initialize once
+    # Initialisation (une seule fois)
     if not st.session_state.get("mlss_initialized", False):
         times = [5, 10, 15, 20, 25, 30]
         st.session_state["df_mlss_lac"] = pd.DataFrame({
@@ -169,14 +178,13 @@ with tab3:
             "Commentaires": [""]*6,
         })
         st.session_state["sv2"] = st.session_state.get("sv2", 0.0)
-        # Default v_target only once
         suggested = round_to_step(st.session_state["sv2"]*0.96, 0.1) if st.session_state["sv2"] and st.session_state["sv2"]>0 else None
         default_speed = suggested if suggested is not None else round_to_step(vma*0.85, 0.1)
         if default_speed is None or not np.isfinite(default_speed): default_speed = 5.0
         st.session_state["v_target"] = float(np.clip(default_speed, 5.0, 30.0))
         st.session_state["mlss_initialized"] = True
 
-    # Form: prevents rerun while typing
+    # Formulaire (évite les refresh pendant la saisie)
     with st.form("mlss_form", clear_on_submit=False):
         c0, c1 = st.columns([1.2, 1])
         with c0:
@@ -190,11 +198,9 @@ with tab3:
         v_default = float(np.clip(v_default, 5.0, 30.0))
         v_target_val = st.number_input("Vitesse cible du test MLSS (km/h)", 5.0, 30.0, v_default, step=0.1, key="v_target_input")
 
-        # Editor (no rerun until submit)
-        # Avoid column_config for compatibility
         df_display = st.data_editor(
-            st.session_state["df_mlss_lac"], key="mlss_editor", num_rows="fixed",
-            hide_index=True, use_container_width=True,
+            st.session_state["df_mlss_lac"], key="mlss_editor",
+            num_rows="fixed", hide_index=True, use_container_width=True,
         )
         submitted_mlss = st.form_submit_button("🔒 Valider les mesures MLSS")
 
@@ -205,7 +211,7 @@ with tab3:
             st.session_state["mlss_ready"] = True
             st.success("Mesures MLSS enregistrées.")
 
-    # --- Analyse (only when ready) ---
+    # --- Analyse & Graphique ---
     dfm = st.session_state.get("df_mlss_lac", pd.DataFrame()).copy()
     t = pd.to_numeric(dfm.get("Temps (min)"), errors="coerce").to_numpy()
     lac = pd.to_numeric(dfm.get("Lactate (mmol/L)"), errors="coerce").to_numpy()
@@ -214,8 +220,9 @@ with tab3:
     valid = np.isfinite(t) & np.isfinite(lac)
     t_valid, lac_valid = t[valid], lac[valid]
 
-    DELTA_10_30_THR = 0.5
-    SLOPE_THR = 0.02
+    # Critères de stabilité "internes"
+    DELTA_10_30_THR = 0.5      # mmol/L
+    SLOPE_THR = 0.02           # mmol·L⁻¹·min⁻¹
 
     delta_10_30 = None
     if np.any(t == 10) and np.any(t == 30):
@@ -232,72 +239,89 @@ with tab3:
     if (delta_10_30 is not None) and (slope is not None):
         stable = (abs(delta_10_30) <= DELTA_10_30_THR) and (abs(slope) <= SLOPE_THR)
 
-    if not st.session_state.get("mlss_ready", False):
-        st.info("Complète le tableau puis clique sur **🔒 Valider les mesures MLSS** pour lancer l’analyse.")
-    else:
-        cm_a, cm_b, cm_c = st.columns(3)
-        cm_a.metric("Δ lactate 10→30 min", f"{delta_10_30:.2f} mmol/L" if delta_10_30 is not None else "—")
-        cm_b.metric("Pente dL/dt", f"{slope:.3f} mmol·L⁻¹·min⁻¹" if slope is not None else "—")
-        cm_c.metric("Bsn", f"{bsn:.1f} mmol/L")
+    # Badge de statut (vert/rouge) hors graphique
+    if st.session_state.get("mlss_ready", False):
         if stable:
-            st.success("Lactate **stable** → compatible MLSS pour la vitesse testée.")
+            st.markdown("**🟢 Lactate stable** – compatible MLSS pour la vitesse testée.")
         else:
-            st.error("Lactate **non stable** → au‑dessus/au‑dessous du MLSS.")
+            st.markdown("**🔴 Lactate instable** – au-dessus / au-dessous du MLSS.")
 
-        # Graphique
-        if len(t_valid) >= 2:
-            fig_mlss, ax = plt.subplots(figsize=(8, 4.5))
-            ax.plot(t, lac, "o-", color="#005a9e", label="Lactate")
-            ax.axhline(bsn, color="#767676", linestyle="--", linewidth=1, label=f"Bsn ≈ {bsn:.1f} mmol/L")
-            ax.set_xlabel("Temps (min)"); ax.set_ylabel("Lactate (mmol/L)")
-            ax.grid(True, alpha=0.3)
-            if np.isfinite(hr).sum() >= 2:
-                ax2 = ax.twinx(); ax2.plot(t, hr, "s-", color="#d83b01", label="FC (bpm)"); ax2.set_ylabel("FC (bpm)")
-                lines, labels = ax.get_legend_handles_labels(); lines2, labels2 = ax2.get_legend_handles_labels()
-                ax.legend(lines + lines2, labels + labels2, loc="upper left")
-            else:
-                ax.legend(loc="upper left")
-            st.pyplot(fig_mlss)
-            st.session_state["mlss_img_b64"] = fig_to_base64(fig_mlss)
+    # Graphique avec bande Vert/Rouge (signal visuel)
+    if st.session_state.get("mlss_ready", False) and len(t_valid) >= 2:
+        fig_mlss, ax = plt.subplots(figsize=(8, 4.6))
+        # Bande de fond selon stabilité
+        if stable:
+            ax.axvspan(np.nanmin(t_valid), np.nanmax(t_valid), color="#107c10", alpha=0.08)  # vert
+        else:
+            ax.axvspan(np.nanmin(t_valid), np.nanmax(t_valid), color="#e81123", alpha=0.08)  # rouge
 
-        # Suggestion vitesse
-        def step_from_slope(s):
-            a = abs(s)
-            if a <= 0.02: return 0.2
-            if a <= 0.04: return 0.3
-            if a <= 0.06: return 0.5
-            return 0.8
-        suggestion = None; rationale = ""
-        if slope is not None:
-            step = step_from_slope(slope)
-            vs_from_sv2 = round_to_step(st.session_state.get("sv2", 0.0)*0.96, 0.1) if st.session_state.get("sv2", 0.0)>0 else None
-            v_target = float(st.session_state.get("v_target", 5.0))
-            if stable:
-                suggestion = round_to_step(vs_from_sv2 if vs_from_sv2 else v_target, 0.1)
-                rationale = "Stable : confirmer ~96% de SV2 ou conserver la vitesse testée."
-            else:
-                if slope > SLOPE_THR:
-                    candidate = round_to_step(max(5.0, v_target - step), 0.1)
-                    suggestion = vs_from_sv2 if (vs_from_sv2 and vs_from_sv2 < v_target) else candidate
-                    rationale = "Lactate en hausse : rapproche-toi de ~96% SV2 ou baisse de ~%.1f km/h." % step
-                elif slope < -SLOPE_THR:
-                    candidate = round_to_step(min(30.0, v_target + step), 0.1)
-                    suggestion = vs_from_sv2 if (vs_from_sv2 and vs_from_sv2 > v_target) else candidate
-                    rationale = "Lactate en baisse : rapproche-toi de ~96% SV2 ou augmente de ~%.1f km/h." % step
-                else:
-                    suggestion = round_to_step(v_target, 0.1)
-                    rationale = "Pente quasi nulle : conserver/affiner ±0,1–0,2 km/h."
-        if suggestion is not None:
-            st.session_state["mlss_suggestion_speed"] = suggestion
-            st.info(f"Vitesse suggérée pour le prochain test : **{suggestion:.1f} km/h**. {rationale}")
+        # Courbe lactate + Bsn
+        ax.plot(t, lac, "o-", color="#005a9e", label="Lactate")
+        ax.axhline(bsn, color="#767676", linestyle="--", linewidth=1, label=f"Bsn ≈ {bsn:.1f} mmol/L")
+        ax.set_xlabel("Temps (min)"); ax.set_ylabel("Lactate (mmol/L)")
+        ax.grid(True, alpha=0.3)
 
-        mlss_png_b64 = st.session_state.get("mlss_img_b64")
-        if mlss_png_b64:
-            st.download_button("📷 Télécharger le graphique MLSS (PNG)",
-                               data=base64.b64decode(mlss_png_b64.encode("utf-8")),
-                               file_name="mlss_plot.png", mime="image/png")
+        # Ajoute un badge dans le graphe
+        status_txt = "Stable" if stable else "Instable"
+        status_color = "#107c10" if stable else "#e81123"
+        ax.text(0.99, 0.02, f"● {status_txt}",
+                transform=ax.transAxes, ha="right", va="bottom",
+                fontsize=11, color="white",
+                bbox=dict(boxstyle="round", facecolor=status_color, edgecolor="none", alpha=0.9))
 
-# -------------------- Tab4: SRS (en formulaire pour éviter les reruns intempestifs) --------------------
+        # FC en axe secondaire (si dispo)
+        if np.isfinite(hr).sum() >= 2:
+            ax2 = ax.twinx()
+            ax2.plot(t, hr, "s-", color="#d83b01", label="FC (bpm)")
+            ax2.set_ylabel("FC (bpm)")
+            lines, labels = ax.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax.legend(lines + lines2, labels + labels2, loc="upper left")
+        else:
+            ax.legend(loc="upper left")
+
+        st.pyplot(fig_mlss)
+        st.session_state["mlss_img_b64"] = fig_to_base64(fig_mlss)
+
+    # Suggestion de vitesse ajustée (si instable)
+    def step_from_slope(s):
+        a = abs(s)
+        if a <= 0.02: return 0.2
+        if a <= 0.04: return 0.3
+        if a <= 0.06: return 0.5
+        return 0.8
+
+    if st.session_state.get("mlss_ready", False) and (slope is not None) and not stable:
+        v_target = float(st.session_state.get("v_target", 5.0))
+        vs_from_sv2 = round_to_step(st.session_state.get("sv2", 0.0)*0.96, 0.1) if st.session_state.get("sv2", 0.0)>0 else None
+        step = step_from_slope(slope)
+        MIN_V, MAX_V = 5.0, 30.0
+
+        if slope > SLOPE_THR:
+            # Lactate monte → vitesse trop élevée
+            candidate = round_to_step(max(MIN_V, v_target - step), 0.1)
+            suggestion = vs_from_sv2 if (vs_from_sv2 and vs_from_sv2 < v_target) else candidate
+            rationale = f"Lactate en hausse : rapproche-toi de ~96% SV2 ou baisse de ~{step:.1f} km/h."
+        elif slope < -SLOPE_THR:
+            # Lactate baisse → vitesse trop faible
+            candidate = round_to_step(min(MAX_V, v_target + step), 0.1)
+            suggestion = vs_from_sv2 if (vs_from_sv2 and vs_from_sv2 > v_target) else candidate
+            rationale = f"Lactate en baisse : rapproche-toi de ~96% SV2 ou augmente de ~{step:.1f} km/h."
+        else:
+            suggestion = round_to_step(v_target, 0.1)
+            rationale = "Pente quasi nulle : conserver/affiner ±0,1–0,2 km/h."
+
+        st.session_state["mlss_suggestion_speed"] = suggestion
+        st.info(f"**Vitesse suggérée** pour le prochain test : **{suggestion:.1f} km/h**. {rationale}")
+
+    # Export PNG
+    mlss_png_b64 = st.session_state.get("mlss_img_b64")
+    if mlss_png_b64:
+        st.download_button("📷 Télécharger le graphique MLSS (PNG)",
+                           data=base64.b64decode(mlss_png_b64.encode("utf-8")),
+                           file_name="mlss_plot.png", mime="image/png")
+
+# -------------------- Tab4: SRS (formulaire autonome) --------------------
 with tab4:
     st.markdown("#### Paramétrage SRS (formulaire)")
     with st.form("srs_form", clear_on_submit=False):
@@ -316,7 +340,6 @@ with tab4:
             v_equiv2 = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, st.session_state.get("v_equiv2", 0.0), step=0.1)
 
         srs_submit = st.form_submit_button("🔒 Calculer corrections SRS")
-
         if srs_submit:
             st.session_state.update({
                 "slope_r": slope_r, "sv1": sv1, "sv2_srs": sv2_srs,
@@ -325,6 +348,7 @@ with tab4:
             })
             st.success("Paramètres SRS enregistrés.")
 
+    # Calculs SRS
     step2 = st.session_state.get("sv2_srs", 0.0) + st.session_state.get("delta_step2", -0.8) if st.session_state.get("sv2_srs", 0.0) > 0 else None
     st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 is not None else "—")
 
@@ -336,10 +360,12 @@ with tab4:
         step1_val = st.session_state.get("step1", 0.0)
         v_equiv2_val = st.session_state.get("v_equiv2", 0.0)
         step2_val = step2
+
         if v_equiv1_val and step1_val and v_equiv1_val > 0 and step1_val > 0:
             mrt1 = (v_equiv1_val - step1_val) / alpha_s
         if v_equiv2_val and step2_val and v_equiv2_val > 0 and step2_val > 0:
             mrt2 = (v_equiv2_val - step2_val) / alpha_s
+
         candidates = [x for x in [mrt1, mrt2] if x and x > 0]
         mrt_used = float(np.mean(candidates)) if candidates else None
 
