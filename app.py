@@ -1,8 +1,12 @@
+
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.8.2)
-# - Logo affiché sur chaque onglet (si présent)
-# - Beep réel (si présent) pour alertes MLSS
-# - Onglets : Fiche Athlète, Analyse Lactate (iframe), MLSS avec timer + alertes sonores, SRS
+# Seuils Lactate – VMA (v0.8.3)
+# - Bouton pour démarrer le compte à rebours MLSS
+# - Graphique MLSS avec courbes Lactate + FC superposées et code couleur stable/instable
+# - Saisie vitesse MLSS basée sur SV2 (96%)
+# - Onglet SRS complet
+# - Logo sur chaque onglet avec fallback
+# - Alerte sonore toutes les 5 min si beep.wav présent
 
 import os
 import time
@@ -11,34 +15,28 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-VERSION = "0.8.2"
+VERSION = "0.8.3"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
-LOGO_PATH = "logo.png"   # Placez votre logo ici
-BEEP_PATH = "beep.wav"   # Placez votre son ici
+LOGO_PATH = "logo.png"
+BEEP_PATH = "beep.wav"
 
-# Sidebar avec fallback
-if os.path.exists(LOGO_PATH):
-    st.sidebar.image(LOGO_PATH, width=120)
-else:
-    st.sidebar.markdown("**Wild Training**")
+# Fonction pour afficher le logo
+def show_logo():
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=100)
+    else:
+        st.markdown("### Wild Training")
 
+# Sidebar
+show_logo()
 st.sidebar.header("Paramètres")
 vma = st.sidebar.number_input("VMA (km/h)", 5.0, 30.0, 17.0, step=0.1)
 bsn = st.sidebar.number_input("Lactate Bsn (mmol/L)", 0.5, 4.0, 1.5, step=0.1)
 st.sidebar.caption(f"Version {VERSION}")
 
 # Tabs
-ath_tab, lactate_tab, mlss_tab, srs_tab = st.tabs([
-    "👤 Fiche Athlète", "📊 Analyse Lactate", "🧪 MLSS", "🏃‍♂️ SRS"
-])
-
-# Fonction pour afficher le logo avec fallback
-def show_logo():
-    if os.path.exists(LOGO_PATH):
-        st.image(LOGO_PATH, width=100)
-    else:
-        st.markdown("### Wild Training")
+ath_tab, lactate_tab, mlss_tab, srs_tab = st.tabs(["👤 Fiche Athlète", "📊 Analyse Lactate", "🧪 MLSS", "🏃‍♂️ SRS"])
 
 # Onglet Fiche Athlète
 with ath_tab:
@@ -56,41 +54,44 @@ with ath_tab:
         tel = st.text_input("Téléphone", st.session_state.get("tel", ""))
         sub = st.form_submit_button("Enregistrer")
         if sub:
-            st.session_state.update({
-                "nom": nom, "prenom": prenom, "dob": str(dob), "sexe": sexe,
-                "poids": poids, "taille": taille, "club": club, "email": email, "tel": tel
-            })
+            st.session_state.update({"nom": nom, "prenom": prenom, "dob": str(dob), "sexe": sexe,
+                                     "poids": poids, "taille": taille, "club": club, "email": email, "tel": tel})
             st.success("Fiche enregistrée")
 
 # Onglet Analyse Lactate
 with lactate_tab:
     show_logo()
     st.markdown("### Outil Analyse Lactate")
-    st.markdown('https://www.exphyslab.com/lactate', unsafe_allow_html=True)
+    st.markdown('<iframe src="https://www.exphyslab.com/lactate" width="100%" height="800"></iframe>', unsafe_allow_html=True)
 
 # Onglet MLSS
 with mlss_tab:
     show_logo()
     st.markdown("### MLSS – Palier 30 min")
-    if "start_time" not in st.session_state:
-        st.session_state["start_time"] = time.time()
-    elapsed = int(time.time() - st.session_state["start_time"])
-    remaining = max(0, 1800 - elapsed)
-    mins, secs = divmod(remaining, 60)
-    st.markdown(f"⏱ Temps restant : **{mins:02d}:{secs:02d}**")
 
-    # Alerte toutes les 5 min
-    if remaining > 0 and remaining % 300 < 2:
-        st.warning("Alerte : point lactate !")
-        if os.path.exists(BEEP_PATH):
-            st.audio(BEEP_PATH)
+    # Bouton pour démarrer le timer
+    if st.button("▶️ Démarrer le compte à rebours"):
+        st.session_state["start_time"] = time.time()
+
+    if "start_time" in st.session_state:
+        elapsed = int(time.time() - st.session_state["start_time"])
+        remaining = max(0, 1800 - elapsed)
+        mins, secs = divmod(remaining, 60)
+        st.markdown(f"⏱ Temps restant : **{mins:02d}:{secs:02d}**")
+        if remaining > 0 and remaining % 300 < 2:
+            st.warning("Alerte : point lactate !")
+            if os.path.exists(BEEP_PATH):
+                st.audio(BEEP_PATH)
+
+    # Saisie SV2 et vitesse MLSS
+    sv2 = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    suggested_speed = round(sv2 * 0.96, 1) if sv2 > 0 else round(vma * 0.85, 1)
+    v_target = st.number_input("Vitesse cible MLSS (km/h)", 5.0, 30.0, suggested_speed, step=0.1)
 
     # Tableau MLSS
     times = [5, 10, 15, 20, 25, 30]
     if "df_mlss" not in st.session_state:
-        st.session_state["df_mlss"] = pd.DataFrame({
-            "Temps (min)": times, "Lactate (mmol/L)": np.nan, "FC (bpm)": np.nan
-        })
+        st.session_state["df_mlss"] = pd.DataFrame({"Temps (min)": times, "Lactate (mmol/L)": np.nan, "FC (bpm)": np.nan})
 
     with st.form("mlss_form"):
         df_mlss_edit = st.data_editor(st.session_state["df_mlss"], num_rows="fixed", hide_index=True)
@@ -99,23 +100,31 @@ with mlss_tab:
             st.session_state["df_mlss"] = df_mlss_edit
             t = pd.to_numeric(df_mlss_edit["Temps (min)"], errors="coerce").to_numpy()
             lac = pd.to_numeric(df_mlss_edit["Lactate (mmol/L)"], errors="coerce").to_numpy()
+            hr = pd.to_numeric(df_mlss_edit["FC (bpm)"], errors="coerce").to_numpy()
             valid = np.isfinite(t) & np.isfinite(lac)
             if np.sum(valid) >= 2:
                 slope = np.polyfit(t[valid], lac[valid], 1)[0]
                 delta = lac[-1] - lac[1] if np.isfinite(lac[-1]) and np.isfinite(lac[1]) else None
                 stable = (abs(slope) <= 0.02) and (delta is not None and abs(delta) <= 0.5)
-                fig2, ax2 = plt.subplots(figsize=(7, 4))
+
+                # Graphique avec code couleur et badge
+                fig, ax = plt.subplots(figsize=(8, 4.5))
                 color_bg = "#d4edda" if stable else "#f8d7da"
-                ax2.set_facecolor(color_bg)
-                ax2.plot(t, lac, "o-", color="blue")
-                ax2.set_xlabel("Temps (min)"); ax2.set_ylabel("Lactate (mmol/L)")
-                ax2.grid(True)
-                st.pyplot(fig2)
+                ax.set_facecolor(color_bg)
+                ax.plot(t, lac, "o-", color="blue", label="Lactate")
+                ax.set_xlabel("Temps (min)"); ax.set_ylabel("Lactate (mmol/L)")
+                ax.grid(True)
+                if np.isfinite(hr).sum() >= 2:
+                    ax2 = ax.twinx()
+                    ax2.plot(t, hr, "s-", color="orange", label="FC")
+                    ax2.set_ylabel("FC (bpm)")
+                ax.legend(loc="upper left")
+                st.pyplot(fig)
+
                 if stable:
-                    st.success("Lactate stable → compatible MLSS")
+                    st.success("🟢 Lactate stable → compatible MLSS")
                 else:
-                    st.error("Lactate instable → ajuster vitesse")
-                    v_target = st.session_state.get("v_target", vma * 0.85)
+                    st.error("🔴 Lactate instable → ajuster vitesse")
                     step = 0.3 if slope > 0 else -0.3
                     suggestion = max(5.0, min(30.0, v_target + step))
                     st.info(f"Proposition vitesse ajustée : {suggestion:.1f} km/h")
@@ -123,4 +132,43 @@ with mlss_tab:
 # Onglet SRS
 with srs_tab:
     show_logo()
-    st.markdown("### SRS – à compléter")
+    st.markdown("### Paramétrage SRS")
+    slope_r = st.number_input("Pente rampe (km/h/min)", 0.0, 10.0, 0.0, step=0.1)
+    sv1 = st.number_input("SV1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    sv2_srs = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    delta_step2 = st.number_input("Delta Step2 (km/h)", -5.0, 5.0, -0.8, step=0.1)
+    step1 = st.number_input("Vitesse Step 1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    vo2_1 = st.number_input("VO₂ Step 1 (ml·kg⁻¹·min⁻¹)", 0.0, 100.0, 0.0, step=0.1)
+    v_equiv1 = st.number_input("Vitesse équivalente VO₂ Step 1 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    vo2_2 = st.number_input("VO₂ Step 2 (ml·kg⁻¹·min⁻¹)", 0.0, 100.0, 0.0, step=0.1)
+    v_equiv2 = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
+
+    step2 = sv2_srs + delta_step2 if sv2_srs > 0 else None
+    st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 else "—")
+
+    mrt1 = mrt2 = mrt_used = None
+    if slope_r > 0:
+        alpha_s = slope_r / 60.0
+        if v_equiv1 > 0 and step1 > 0:
+            mrt1 = (v_equiv1 - step1) / alpha_s
+        if v_equiv2 > 0 and step2 and step2 > 0:
+            mrt2 = (v_equiv2 - step2) / alpha_s
+        candidates = [x for x in [mrt1, mrt2] if x and x > 0]
+        mrt_used = np.mean(candidates) if candidates else None
+
+    cm1, cm2, cm3 = st.columns(3)
+    cm1.metric("MRT Step 1 (s)", f"{mrt1:.0f}" if mrt1 else "—")
+    cm2.metric("MRT Step 2 (s)", f"{mrt2:.0f}" if mrt2 else "—")
+    cm3.metric("MRT utilisé (s)", f"{mrt_used:.0f}" if mrt_used else "—")
+
+    sv1_corr = sv2_corr = None
+    if mrt_used and slope_r > 0:
+        alpha_s = slope_r / 60.0
+        if sv1 > 0:
+            sv1_corr = sv1 - alpha_s * mrt_used
+        if sv2_srs > 0:
+            sv2_corr = sv2_srs - alpha_s * mrt_used
+
+    cv1, cv2 = st.columns(2)
+    cv1.metric("SV1 corrigée (km/h)", f"{sv1_corr:.2f}" if sv1_corr else "—")
+    cv2.metric("SV2 corrigée (km/h)", f"{sv2_corr:.2f}" if sv2_corr else "—")
