@@ -97,7 +97,7 @@ with ath_tab:
 with lactate_tab:
     show_logo()
     st.markdown("### Outil Analyse Lactate")
-    components.html('<iframe src="https://www.exphyslab.com/lactate" style="width:100%;height:800px;border:none;"></iframe>', height=820)
+    components.html('<iframe src=\"https://www.exphyslab.com/lactate\" style=\"width:100%;height:800px;border:none;\"></iframe>', height=820)
 st.info('Privilégier **Bsln+0.5** pour SL1 et **modDmax** pour SL2')
 
 # -------------------- MLSS --------------------
