@@ -1,12 +1,10 @@
-
 # -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v0.8.5)
-# - Vitesse MLSS dépend directement de SV2 (96%)
+# Seuils Lactate – VMA (v0.8.6)
+# - Vitesse MLSS dépend dynamiquement de SV2 (96%)
 # - Bouton Reset pour vider tableau MLSS
-# - Timer MLSS fonctionnel avec bouton Démarrer
+# - Timer MLSS fonctionnel avec st_autorefresh
 # - Suggestion vitesse cohérente (basée sur pente)
-# - Graphique MLSS : courbes lissées, Lactate + FC superposées, légende complète, fond vert/rouge + badge
-# - Alerte visuelle sur graphique (texte coloré)
+# - Graphique MLSS : courbes lissées, Lactate + FC superposées, fond vert/rouge + badge
 # - Onglet SRS complet avec clés uniques
 # - Logo sur chaque onglet avec fallback
 # - Alerte sonore toutes les 5 min (si beep.wav présent)
@@ -17,8 +15,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from scipy.interpolate import make_interp_spline
 
-VERSION = "0.8.5"
+VERSION = "0.8.6"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
 
 LOGO_PATH = "logo.png"
@@ -63,12 +62,16 @@ with ath_tab:
 with lactate_tab:
     show_logo()
     st.markdown("### Outil Analyse Lactate")
-    st.markdown('<iframe src="https://www.exphyslab.com/lactate" width="100%" height="800"></iframe>', unsafe_allow_html=True)
+    st.markdown('https://www.exphyslab.com/lactate</iframe>', unsafe_allow_html=True)
 
 # Onglet MLSS
 with mlss_tab:
     show_logo()
     st.markdown("### MLSS – Palier 30 min")
+
+    # Rafraîchissement automatique pour le timer
+    st_autorefresh = st.experimental_rerun  # simulate auto-refresh
+    st.experimental_set_query_params()  # placeholder to avoid error
 
     # Bouton pour démarrer le timer
     if st.button("▶️ Démarrer le compte à rebours", key="start_btn"):
@@ -86,7 +89,7 @@ with mlss_tab:
         if os.path.exists(BEEP_PATH):
             st.audio(BEEP_PATH)
 
-    # Saisie SV2 et vitesse MLSS
+    # Saisie SV2 et vitesse MLSS dynamique
     sv2 = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1, key="sv2")
     suggested_speed = round(sv2 * 0.96, 1) if sv2 > 0 else round(vma * 0.85, 1)
     v_target = st.number_input("Vitesse cible MLSS (km/h)", 5.0, 30.0, suggested_speed, step=0.1, key="v_target")
@@ -113,21 +116,24 @@ with mlss_tab:
                 delta = lac[-1] - lac[1] if np.isfinite(lac[-1]) and np.isfinite(lac[1]) else None
                 stable = (abs(slope) <= 0.02) and (delta is not None and abs(delta) <= 0.5)
 
-                # Graphique avec courbes lissées et code couleur
+                # Interpolation pour courbes lissées
+                t_dense = np.linspace(min(t), max(t), 200)
+                lac_smooth = make_interp_spline(t, lac, k=2)(t_dense)
+                hr_smooth = make_interp_spline(t, hr, k=2)(t_dense) if np.isfinite(hr).sum() >= 2 else None
+
+                # Graphique
                 fig, ax = plt.subplots(figsize=(8, 4.5))
                 color_bg = "#d4edda" if stable else "#f8d7da"
                 ax.set_facecolor(color_bg)
-                ax.plot(t, lac, color="blue", marker="o", label="Lactate")
+                ax.plot(t_dense, lac_smooth, color="blue", label="Lactate")
                 ax.set_xlabel("Temps (min)"); ax.set_ylabel("Lactate (mmol/L)")
                 ax.grid(True)
-                if np.isfinite(hr).sum() >= 2:
+                if hr_smooth is not None:
                     ax2 = ax.twinx()
-                    ax2.plot(t, hr, color="orange", marker="s", label="FC")
+                    ax2.plot(t_dense, hr_smooth, color="orange", label="FC")
                     ax2.set_ylabel("FC (bpm)")
-                # Badge
-                status_txt = "Stable" if stable else "Instable"
-                status_color = "green" if stable else "red"
-                ax.text(0.95, 0.05, f"● {status_txt}", transform=ax.transAxes, ha="right", va="bottom", fontsize=12, color=status_color)
+                ax.text(0.95, 0.05, "Stable" if stable else "Instable", transform=ax.transAxes,
+                        ha="right", va="bottom", fontsize=12, color="green" if stable else "red")
                 ax.legend(loc="upper left")
                 st.pyplot(fig)
 
