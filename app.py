@@ -250,3 +250,46 @@ with srs_tab:
         st.caption("Correction appliquée : v_corr = v_mesurée + slope_r × MRT_min")
     else:
         st.info("Renseignez slope_r, Step 1/2 et vitesses équivalentes (v_equiv1/v_equiv2) pour estimer le MRT et corriger les seuils.")
+
+
+# --- Ajout dans SRS : suggestion Delta Step 2 + bouton ---
+if slope_r > 0:
+    mrt_for_calc = mrt_min if 'mrt_min' in locals() and mrt_min is not None else 0.5
+    delta_suggestion = - slope_r * mrt_for_calc
+    delta_suggestion = float(np.clip(delta_suggestion, -1.2, -0.2))
+    delta_suggestion = round(delta_suggestion, 1)
+    st.caption(f"Suggestion Delta Step2 auto ≈ {delta_suggestion:+.1f} km/h (basée sur slope_r × MRT)")
+    if st.button("Appliquer la suggestion"):
+        st.session_state["delta_step2"] = delta_suggestion
+        st.rerun()
+
+# --- Export PNG MLSS ---
+if st.button("Exporter le graphique MLSS en PNG"):
+    fig.savefig("mlss_graph.png")
+    with open("mlss_graph.png", "rb") as img_file:
+        st.download_button(label="Télécharger MLSS.png", data=img_file, file_name="MLSS.png", mime="image/png")
+
+# --- Rapport explicatif SRS ---
+rapport = """
+### Rapport SRS
+
+**Seuils initiaux :**
+- SV1 = {sv1:.2f} km/h
+- SV2 = {sv2_srs:.2f} km/h
+
+**MRT estimé :** {mrt_sec:.1f} s
+
+**Seuils corrigés :**
+- SV1 corrigé = {sv1_corr:.2f} km/h
+- SV2 corrigé = {sv2_corr:.2f} km/h
+
+**Pourquoi ces corrections ?**
+Le MRT reflète le retard de la VO₂ lors des paliers. Les seuils corrigés tiennent compte de ce décalage cinétique, offrant une estimation plus réaliste des intensités physiologiques.
+""" if len(mrt_vals_min) > 0 else "Aucune donnée suffisante pour générer un rapport."
+
+st.markdown(rapport)
+if len(mrt_vals_min) > 0 and st.button("Exporter le rapport SRS"):
+    with open("rapport_SRS.txt", "w", encoding="utf-8") as f:
+        f.write(rapport)
+    with open("rapport_SRS.txt", "rb") as f:
+        st.download_button(label="Télécharger rapport SRS", data=f, file_name="rapport_SRS.txt", mime="text/plain")
