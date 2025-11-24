@@ -1,30 +1,26 @@
-# -*- coding: utf-8 -*-
-# Seuils Lactate – VMA (v1.0.0)
+
 import os
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 import streamlit.components.v1 as components
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
 
-VERSION = "1.0.0"
+VERSION = "2.0"
 st.set_page_config(page_title="Seuils Lactate – VMA", layout="wide")
-LOGO_PATH = "logo.png"  # image du logo (placer ce fichier à côté du script)
+LOGO_PATH = "logo.png"
 
-# -------------------- Helpers --------------------
 def show_logo():
-    """Affiche le logo si logo.png existe, sinon un texte fallback."""
     if os.path.exists(LOGO_PATH):
         st.image(LOGO_PATH, width=100)
     else:
         st.markdown("### Wild Training")
 
 def suggestion_step(slope, delta):
-    """
-    Amplitude d’ajustement en km/h selon la pente et la dérive lactate (Δ10→30), bornée [0.2 ; 0.8]
-    - Base = |pente| * 10
-    - Bonus dérive : +0.2 si |Δ| > 0.5 ; +0.3 si |Δ| > 1.0 (cumulatif max jusqu’au bornage)
-    """
     base = abs(slope) * 10
     if delta is not None:
         if abs(delta) > 0.5:
@@ -34,7 +30,6 @@ def suggestion_step(slope, delta):
     return float(np.clip(base, 0.2, 0.8))
 
 def mlss_stability_metrics(t, lac):
-    """Calcule (pente, Δ10→30, stable) pour la courbe lactate."""
     t = np.array(t, dtype=float); lac = np.array(lac, dtype=float)
     mask = np.isfinite(t) & np.isfinite(lac)
     t, lac = t[mask], lac[mask]
@@ -52,174 +47,87 @@ def mlss_stability_metrics(t, lac):
         stable = (abs(slope) <= 0.02) and (abs(delta) <= 0.5)
     return slope, delta, stable
 
-# -------------------- En-tête global --------------------
+# En-tête global
 col_header = st.columns([0.12, 0.88])
 with col_header[0]:
     show_logo()
 with col_header[1]:
     st.markdown("## Seuils Lactate – VMA")
 
-# -------------------- Sidebar --------------------
+# Sidebar
 st.sidebar.header("Paramètres")
 with st.sidebar:
     show_logo()
     st.caption(f"Version {VERSION}")
-    vma = st.number_input("VMA (km/h)", 5.0, 30.0, 17.0, step=0.1, key="vma")
-    bsn = st.number_input("Lactate Bsn (mmol/L)", 0.5, 4.0, 1.5, step=0.1, key="bsn")
+    vma = st.number_input("VMA (km/h)", 5.0, 30.0, 17.0, step=0.1)
+    bsn = st.number_input("Lactate Bsn (mmol/L)", 0.5, 4.0, 1.5, step=0.1)
 
-# -------------------- Tabs --------------------
 ath_tab, lactate_tab, mlss_tab, srs_tab = st.tabs(["👤 Fiche Athlète", "📊 Analyse Lactate", "🧪 MLSS", "🏃‍♂️ SRS"])
 
-# -------------------- Fiche Athlète --------------------
 with ath_tab:
     st.markdown("### Fiche signalétique")
     with st.form("ath_form"):
-        nom = st.text_input("Nom", st.session_state.get("nom", ""), key="nom")
-        prenom = st.text_input("Prénom", st.session_state.get("prenom", ""), key="prenom")
-        dob = st.date_input("Date de naissance", key="dob")
-        sexe = st.selectbox("Sexe", ["Homme", "Femme"], index=0, key="sexe")
-        poids = st.number_input("Poids (kg)", 30.0, 150.0, st.session_state.get("poids", 70.0), key="poids")
-        taille = st.number_input("Taille (cm)", 100.0, 220.0, st.session_state.get("taille", 175.0), key="taille")
-        club = st.text_input("Club", st.session_state.get("club", ""), key="club")
-        email = st.text_input("Email", st.session_state.get("email", ""), key="email")
-        tel = st.text_input("Téléphone", st.session_state.get("tel", ""), key="tel")
+        nom = st.text_input("Nom")
+        prenom = st.text_input("Prénom")
+        dob = st.date_input("Date de naissance")
+        sexe = st.selectbox("Sexe", ["Homme", "Femme"])
+        poids = st.number_input("Poids (kg)", 30.0, 150.0, 70.0)
+        taille = st.number_input("Taille (cm)", 100.0, 220.0, 175.0)
+        club = st.text_input("Club")
+        email = st.text_input("Email")
+        tel = st.text_input("Téléphone")
         sub = st.form_submit_button("Enregistrer")
         if sub:
             st.success("Fiche enregistrée")
 
-# -------------------- Analyse Lactate --------------------
 with lactate_tab:
     st.markdown("### Outil Analyse Lactate")
     components.html('<iframe src="https://www.exphyslab.com/lactate" style="width:100%;height:800px;border:none;"></iframe>', height=820)
     st.info('Privilégier **Bsln+0.5** pour SL1 et **modDmax** pour SL2')
 
-# -------------------- MLSS --------------------
 with mlss_tab:
     st.markdown("### MLSS – Palier 30 min")
-    # --- Timer 30:00 ---
-    st.markdown("#### ⏱ Compte à rebours (30:00)")
-    html_timer = """
-<div id=\"mlss-timer\" style=\"padding:8px;border:1px solid #ddd;border-radius:8px;max-width:460px;\">
-  <div id=\"timer-display\" style=\"font:600 28px/1.2 ui-sans-serif,system-ui; margin-bottom:8px;\">30:00</div>
-  <div id=\"alert-banner\" style=\"display:none;padding:6px 10px;margin-bottom:8px;border-radius:6px;background:#ffe5e5;color:#b00020;font-weight:600;\">⚠️ Point lactate !</div>
-  <div style=\"display:flex;gap:8px;\">
-    <button id=\"btn-start\" style=\"padding:6px 12px;border:1px solid #666;border-radius:6px;background:#e6f4ff;cursor:pointer;\">▶️ Démarrer</button>
-    <button id=\"btn-stop\" style=\"padding:6px 12px;border:1px solid #666;border-radius:6px;background:#f1f1f1;cursor:pointer;\">⏹️ Arrêter</button>
-    <button id=\"btn-reset\" style=\"padding:6px 12px;border:1px solid #666;border-radius:6px;background:#fff;cursor:pointer;\">🔄 Reset</button>
-  </div>
-  <div style=\"margin-top:6px;font:13px/1.3 ui-sans-serif,system-ui;color:#555;\">Alertes à 25:00, 20:00, 15:00, 10:00, 05:00, 00:00 (bip ~2 s)</div>
-</div>
-<script>
-(function(){
-  const marks = [1500,1200,900,600,300,0];
-  let duration = 1800; let remaining = duration; let running = false; let intervalId = null; let fired = {}; marks.forEach(m => fired[m] = false);
-  const disp = document.getElementById('timer-display'); const banner = document.getElementById('alert-banner');
-  const fmt = (s)=>{ const m=Math.floor(s/60), r=s%60; return `${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`; };
-  function showBanner(show){ banner.style.display = show ? 'block' : 'none'; }
-  function beep2s(){ try{ const ctx = new (window.AudioContext||window.webkitAudioContext)(); const osc = ctx.createOscillator(); const gain = ctx.createGain(); osc.frequency.value = 880; osc.connect(gain); gain.connect(ctx.destination); gain.gain.setValueAtTime(0.2, ctx.currentTime); osc.start(); setTimeout(()=>{ osc.stop(); ctx.close(); }, 2000); }catch(e){} }
-  function tick(){ if(!running) return; remaining = Math.max(0, remaining-1); disp.textContent = fmt(remaining); if (marks.includes(remaining) && !fired[remaining]){ fired[remaining] = true; showBanner(true); beep2s(); setTimeout(()=>showBanner(false), 2200); } if(remaining === 0){ stop(); } }
-  function start(){ if(running) return; running = true; if(!intervalId){ intervalId = setInterval(tick, 1000); } }
-  function stop(){ running = false; if(intervalId){ clearInterval(intervalId); intervalId = null; } }
-  function reset(){ stop(); remaining = duration; disp.textContent = fmt(remaining); Object.keys(fired).forEach(k=>fired[k]=false); showBanner(false); }
-  document.getElementById('btn-start').onclick = start; document.getElementById('btn-stop').onclick = stop; document.getElementById('btn-reset').onclick = reset;
-})();
-</script>
-"""
-    components.html(html_timer, height=190)
-
-    st.markdown("---")
-    # --- Lier v_target à SV2 (96 %) ---
-    col_sv2 = st.columns([1,1,1.2])
-    with col_sv2[0]:
-        sv2 = st.number_input("SV2 (km/h)", 0.0, 30.0, float(st.session_state.get("sv2", 0.0)), step=0.1, key="sv2")
-    with col_sv2[1]:
-        link_sv2 = st.checkbox("Lier v_target à 96 % SV2", value=st.session_state.get("link_sv2", True), key="link_sv2")
-    with col_sv2[2]:
-        sv2_text = f"{0.96*sv2:.1f} km/h" if sv2 > 0 else f"{0.85*vma:.1f} km/h (≈85% VMA)"
-        st.caption(f"Vitesse initiale = **{sv2_text}**")
-
-    if ("v_target" not in st.session_state) or link_sv2:
-        st.session_state["v_target"] = round(0.96*sv2, 1) if sv2 > 0 else round(0.85*vma, 1)
-
-    default_v = max(5.0, float(st.session_state.get("v_target", 5.0)))
-    v_target = st.number_input("Vitesse cible MLSS (km/h)", 5.0, 30.0, default_v, step=0.1, key="v_target")
-
-    # --- Tableau MLSS ---
+    st.markdown("#### ⏱ Timer 30 min")
+    # Graphique MLSS
     if "df_mlss" not in st.session_state:
         st.session_state["df_mlss"] = pd.DataFrame({"Temps (min)": [5,10,15,20,25,30], "Lactate (mmol/L)": np.nan, "FC (bpm)": np.nan})
     with st.form("mlss_form"):
-        df_mlss_edit = st.data_editor(st.session_state["df_mlss"], num_rows="fixed", hide_index=True, key="mlss_editor")
+        df_mlss_edit = st.data_editor(st.session_state["df_mlss"], num_rows="fixed", hide_index=True)
         sub_mlss = st.form_submit_button("Analyser MLSS")
         if sub_mlss:
             st.session_state["df_mlss"] = df_mlss_edit
-    # --- Analyse + Graphique ---
     df = st.session_state["df_mlss"].copy()
     t = pd.to_numeric(df["Temps (min)"], errors="coerce").to_numpy()
     lac = pd.to_numeric(df["Lactate (mmol/L)"], errors="coerce").to_numpy()
     hr = pd.to_numeric(df["FC (bpm)"], errors="coerce").to_numpy()
-    slope, delta_10_30, stable = mlss_stability_metrics(t, lac)
+    if np.isfinite(lac).sum() >= 2:
+        slope = np.polyfit(t, lac, 1)[0]
+        fig, ax = plt.subplots(figsize=(8,5))
+        ax.plot(t, lac, 'o-', color='blue', label='Lactate')
+        ax.axhline(bsn, color='gray', linestyle='--', label=f'Bsn {bsn:.1f}')
+        ax.set_xlabel('Temps (min)')
+        ax.set_ylabel('Lactate (mmol/L)')
+        if np.isfinite(hr).sum() >= 2:
+            ax2 = ax.twinx()
+            ax2.plot(t, hr, 's-', color='red', label='FC')
+            ax2.set_ylabel('FC (bpm)')
+        st.pyplot(fig)
+        if st.button("Exporter le graphique MLSS en PNG"):
+            fig.savefig("mlss_graph.png")
+            with open("mlss_graph.png", "rb") as img_file:
+                st.download_button("Télécharger MLSS.png", img_file, "MLSS.png", "image/png")
 
-    if slope is not None and delta_10_30 is not None and not stable:
-        st.error(f"⚠️ Lactate instable (Δ10→30 = {delta_10_30:.2f} mmol/L ; pente = {slope:.3f} mmol·L⁻¹·min⁻¹)")
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    ax.set_facecolor("#d4edda" if stable else "#f8d7da")
-    ax.plot(t, lac, "o-", color="#005a9e", linewidth=2.5, label="Lactate (mmol/L)")
-    ax.axhline(bsn, color="#767676", linestyle="--", linewidth=1, label=f"Bsn ≈ {bsn:.1f} mmol/L")
-    ax.set_xlabel("Temps (min)"); ax.set_ylabel("Lactate (mmol/L)"); ax.grid(True, alpha=0.3)
-    handles, labels = ax.get_legend_handles_labels()
-    if np.isfinite(hr).sum() >= 2:
-        ax2 = ax.twinx()
-        ax2.plot(t, hr, "s-", color="#d83b01", linewidth=2.0, label="FC (bpm)")
-        ax2.set_ylabel("FC (bpm)")
-        h2, l2 = ax2.get_legend_handles_labels()
-        ax.legend(handles + h2, labels + l2, loc="upper left")
-    else:
-        ax.legend(loc="upper left")
-    ax.text(0.98, 0.04, "● Stable" if stable else "● Instable",
-            transform=ax.transAxes, ha="right", va="bottom",
-            fontsize=11, color="white",
-            bbox=dict(boxstyle="round", facecolor=("#107c10" if stable else "#e81123"), edgecolor="none", alpha=0.9))
-    st.pyplot(fig)
-
-    # --- Suggestion vitesse ---
-    if slope is not None and delta_10_30 is not None:
-        step_amp = suggestion_step(slope, delta_10_30)
-        vt = float(st.session_state["v_target"])
-        vs96 = round(0.96*sv2, 1) if sv2 > 0 else None
-        if not stable:
-            if slope > 0.02:
-                candidate = max(5.0, vt - step_amp)
-                suggestion = vs96 if (vs96 and vs96 < vt) else candidate
-                rationale = f"Lactate en hausse → baisse ~{step_amp:.1f} km/h"
-            elif slope < -0.02:
-                candidate = min(30.0, vt + step_amp)
-                suggestion = vs96 if (vs96 and vs96 > vt) else candidate
-                rationale = f"Lactate en baisse → augmente ~{step_amp:.1f} km/h"
-            else:
-                suggestion = vt; rationale = "Pente quasi nulle : conserver / affiner ±0,1–0,2 km/h"
-            st.info(f"**Proposition vitesse ajustée** : **{suggestion:.1f} km/h**. {rationale} (Δ10→30={delta_10_30:.2f})")
-        else:
-            st.success("Lactate stable → conserver la vitesse testée.")
-
-# -------------------- SRS --------------------
 with srs_tab:
     st.markdown("### Paramétrage SRS")
-
-    slope_r = st.number_input("Pente rampe (km/h/min)", 0.0, 10.0, 0.0, step=0.1, key="slope_r")
-    sv1 = st.number_input("SV1 (km/h)", 0.0, 30.0, 0.0, step=0.1, key="sv1")
-    sv2_srs = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1, key="sv2_srs")
+    slope_r = st.number_input("Pente rampe (km/h/min)", 0.0, 10.0, 0.0, step=0.1)
+    sv1 = st.number_input("SV1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    sv2_srs = st.number_input("SV2 (km/h)", 0.0, 30.0, 0.0, step=0.1)
     delta_step2 = st.number_input("Delta Step2 (km/h)", -5.0, 5.0, -0.8, step=0.1, key="delta_step2")
-    step1 = st.number_input("Vitesse Step 1 (km/h)", 0.0, 30.0, 0.0, step=0.1, key="step1")
-    vo2_1 = st.number_input("VO₂ Step 1 (ml·kg⁻¹·min⁻¹)", 0.0, 100.0, 0.0, step=0.1, key="vo2_1")
-    v_equiv1 = st.number_input("Vitesse équivalente VO₂ Step 1 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1, key="v_equiv1")
-    vo2_2 = st.number_input("VO₂ Step 2 (ml·kg⁻¹·min⁻¹)", 0.0, 100.0, 0.0, step=0.1, key="vo2_2")
-    v_equiv2 = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1, key="v_equiv2")
-
+    step1 = st.number_input("Vitesse Step 1 (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    v_equiv1 = st.number_input("Vitesse équivalente VO₂ Step 1 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
+    v_equiv2 = st.number_input("Vitesse équivalente VO₂ Step 2 (rampe) (km/h)", 0.0, 30.0, 0.0, step=0.1)
     step2 = sv2_srs + delta_step2 if sv2_srs > 0 else None
     st.metric("Vitesse Step 2 (km/h)", f"{step2:.1f}" if step2 else "—")
-
-    # --- Calcul MRT et seuils corrigés (UNIQUEMENT SRS) ---
     valid_slope = slope_r > 0
     mrt_vals_min = []
     try:
@@ -236,7 +144,6 @@ with srs_tab:
                 mrt_vals_min.append(mrt2_min)
     except Exception:
         pass
-
     if len(mrt_vals_min) > 0:
         mrt_min = sum(mrt_vals_min) / len(mrt_vals_min)
         mrt_sec = mrt_min * 60
@@ -250,46 +157,31 @@ with srs_tab:
         st.caption("Correction appliquée : v_corr = v_mesurée + slope_r × MRT_min")
     else:
         st.info("Renseignez slope_r, Step 1/2 et vitesses équivalentes (v_equiv1/v_equiv2) pour estimer le MRT et corriger les seuils.")
-
-
-# --- Ajout dans SRS : suggestion Delta Step 2 + bouton ---
-if slope_r > 0:
-    mrt_for_calc = mrt_min if 'mrt_min' in locals() and mrt_min is not None else 0.5
-    delta_suggestion = - slope_r * mrt_for_calc
-    delta_suggestion = float(np.clip(delta_suggestion, -1.2, -0.2))
-    delta_suggestion = round(delta_suggestion, 1)
-    st.caption(f"Suggestion Delta Step2 auto ≈ {delta_suggestion:+.1f} km/h (basée sur slope_r × MRT)")
-    if st.button("Appliquer la suggestion"):
-        st.session_state["delta_step2"] = delta_suggestion
-        st.rerun()
-
-# --- Export PNG MLSS ---
-if st.button("Exporter le graphique MLSS en PNG"):
-    fig.savefig("mlss_graph.png")
-    with open("mlss_graph.png", "rb") as img_file:
-        st.download_button(label="Télécharger MLSS.png", data=img_file, file_name="MLSS.png", mime="image/png")
-
-# --- Rapport explicatif SRS ---
-rapport = """
-### Rapport SRS
-
-**Seuils initiaux :**
-- SV1 = {sv1:.2f} km/h
-- SV2 = {sv2_srs:.2f} km/h
-
-**MRT estimé :** {mrt_sec:.1f} s
-
-**Seuils corrigés :**
-- SV1 corrigé = {sv1_corr:.2f} km/h
-- SV2 corrigé = {sv2_corr:.2f} km/h
-
-**Pourquoi ces corrections ?**
-Le MRT reflète le retard de la VO₂ lors des paliers. Les seuils corrigés tiennent compte de ce décalage cinétique, offrant une estimation plus réaliste des intensités physiologiques.
-""" if len(mrt_vals_min) > 0 else "Aucune donnée suffisante pour générer un rapport."
-
-st.markdown(rapport)
-if len(mrt_vals_min) > 0 and st.button("Exporter le rapport SRS"):
-    with open("rapport_SRS.txt", "w", encoding="utf-8") as f:
-        f.write(rapport)
-    with open("rapport_SRS.txt", "rb") as f:
-        st.download_button(label="Télécharger rapport SRS", data=f, file_name="rapport_SRS.txt", mime="text/plain")
+    if slope_r > 0:
+        mrt_for_calc = mrt_min if 'mrt_min' in locals() and mrt_min is not None else 0.5
+        delta_suggestion = round(np.clip(-slope_r * mrt_for_calc, -1.2, -0.2), 1)
+        st.caption(f"Suggestion Delta Step2 auto ≈ {delta_suggestion:+.1f} km/h")
+        if st.button("Appliquer la suggestion"):
+            st.session_state["delta_step2"] = delta_suggestion
+            st.rerun()
+    if st.button("Exporter le rapport complet en PDF"):
+        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate("rapport_complet.pdf", pagesize=A4)
+        elements = []
+        if os.path.exists(LOGO_PATH):
+            elements.append(Image(LOGO_PATH, width=6*cm, height=6*cm))
+        elements.append(Paragraph("Rapport complet MLSS + SRS + Fiche Athlète", styles['Title']))
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph("Fiche Athlète", styles['Heading2']))
+        elements.append(Paragraph(f"Nom: {nom}<br/>Prénom: {prenom}<br/>Date de naissance: {dob}<br/>Sexe: {sexe}<br/>Poids: {poids} kg<br/>Taille: {taille} cm<br/>Club: {club}", styles['Normal']))
+        elements.append(Spacer(1, 12))
+        fig.savefig("mlss_graph.png")
+        elements.append(Paragraph("Graphique MLSS", styles['Heading2']))
+        elements.append(Image("mlss_graph.png", width=14*cm, height=8*cm))
+        elements.append(Spacer(1, 12))
+        rapport_text = f"Seuils initiaux : SV1 = {sv1:.2f} km/h, SV2 = {sv2_srs:.2f} km/h<br/>MRT estimé : {mrt_sec:.1f} s<br/>Seuils corrigés : SV1 = {sv1_corr:.2f} km/h, SV2 = {sv2_corr:.2f} km/h<br/>Pourquoi ces corrections ? Le MRT reflète le retard de la VO₂ lors des paliers. Les seuils corrigés tiennent compte de ce décalage cinétique, offrant une estimation plus réaliste des intensités physiologiques." if len(mrt_vals_min) > 0 else "Aucune donnée suffisante pour générer un rapport."
+        elements.append(Paragraph("Rapport SRS", styles['Heading2']))
+        elements.append(Paragraph(rapport_text, styles['Normal']))
+        doc.build(elements)
+        with open("rapport_complet.pdf", "rb") as f:
+            st.download_button("Télécharger rapport complet PDF", f, "rapport_complet.pdf", "application/pdf")
